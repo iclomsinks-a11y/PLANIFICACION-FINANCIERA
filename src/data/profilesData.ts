@@ -39,6 +39,13 @@ export const PROFILES_LIST: ProfileDefinition[] = [
         importe: 2150,
         frecuencia: 'mensual',
         activo: true,
+        esNomina: true,
+        salarioFuturo: {
+          activo: false,
+          mes: 1,
+          anio: 2027,
+          importePrevisto: 2300,
+        },
       },
       {
         id: 'uf-ing-2',
@@ -472,6 +479,13 @@ export const PROFILES_LIST: ProfileDefinition[] = [
         importe: 2450,
         frecuencia: 'mensual',
         activo: true,
+        esNomina: true,
+        salarioFuturo: {
+          activo: false,
+          mes: 1,
+          anio: 2027,
+          importePrevisto: 2650,
+        },
       },
       {
         id: 'ha-viv-1',
@@ -678,6 +692,13 @@ export const PROFILES_LIST: ProfileDefinition[] = [
         importe: 2550,
         frecuencia: 'mensual',
         activo: true,
+        esNomina: true,
+        salarioFuturo: {
+          activo: false,
+          mes: 1,
+          anio: 2027,
+          importePrevisto: 2750,
+        },
       },
       {
         id: 'ma-viv-1',

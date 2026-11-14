@@ -141,6 +141,17 @@ export function simulateMortgageAndTreasury(
     return sum;
   };
 
+  const getAhorroSinHipotecaEnMes = (yyyymm: string): number => {
+    const ajustes = input.ajustesSalarioFuturo ?? [];
+    let delta = 0;
+    for (const adj of ajustes) {
+      if (yyyymm >= adj.fechaYYYYMM) {
+        delta += adj.deltaMensual;
+      }
+    }
+    return input.ahorroNetoMensualSinHipoteca + delta;
+  };
+
   const maxSafetyMonths = Math.max(totalMonthsOriginal + 12, 480);
 
   for (let m = 0; m < maxSafetyMonths && capital > 0.01 && plazoRestante > 0; m++) {
@@ -205,8 +216,13 @@ export function simulateMortgageAndTreasury(
       // Nunca perforar el colchón mínimo de seguridad
       const liquidezDisponibleHoy = Math.max(0, saldoCuenta - input.colchonSeguridad);
       // Considerar también que durante el año el flujo neto (ahorroNetoSinHipoteca - cuota) alimenta o consume cuenta
-      const flujosNetosAnioEstimados =
-        input.ahorroNetoMensualSinHipoteca * 12 - cuotasPrevistasAnio;
+      let ahorroAnualEstimado = 0;
+      for (let mCal = 1; mCal <= 12; mCal++) {
+        ahorroAnualEstimado += getAhorroSinHipotecaEnMes(
+          `${anio}-${String(mCal).padStart(2, '0')}`
+        );
+      }
+      const flujosNetosAnioEstimados = ahorroAnualEstimado - cuotasPrevistasAnio;
       const liquidezSegura =
         flujosNetosAnioEstimados >= 0
           ? liquidezDisponibleHoy
@@ -340,8 +356,8 @@ export function simulateMortgageAndTreasury(
     }
 
     // 6. Flujo de ahorro mensual neto en Cuenta Remunerada
-    // ahorroNetoMensualSinHipoteca es el excedente mensual antes de pagar la cuota ordinaria de hipoteca
-    const flujoAhorroMes = input.ahorroNetoMensualSinHipoteca - cuotaOrdinaria;
+    // ahorroNetoMensualSinHipoteca + ajustes futuros de nómina aplicables desde su mes/año
+    const flujoAhorroMes = getAhorroSinHipotecaEnMes(fechaYYYYMM) - cuotaOrdinaria;
     saldoCuenta += flujoAhorroMes;
 
     // Actualizar plazo restante real (si está en reducir_plazo o en carencia)

@@ -495,6 +495,23 @@ export const MortgageTreasurySimulator: React.FC<MortgageTreasurySimulatorProps>
             </span>
           </div>
         )}
+
+        {input.ajustesSalarioFuturo && input.ajustesSalarioFuturo.length > 0 && (
+          <div className="mt-4 rounded-lg border border-blue-200 bg-blue-50/70 px-4 py-3 text-sm text-blue-950 dark:border-blue-900/60 dark:bg-blue-950/30 dark:text-blue-200">
+            <span className="font-semibold">Salarios futuros aplicados en tesorería: </span>
+            {input.ajustesSalarioFuturo.map((adj, idx) => (
+              <span key={adj.id}>
+                {idx > 0 ? ' · ' : ''}
+                {adj.nombre} desde <strong>{formatYYYYMM(adj.fechaYYYYMM)}</strong> (
+                <span className="font-mono font-semibold tabular-nums">
+                  {adj.deltaMensual >= 0 ? '+' : ''}
+                  {formatEUR(adj.deltaMensual)}/mes
+                </span>
+                )
+              </span>
+            ))}
+          </div>
+        )}
       </section>
 
       {/* Gráfica SVG Trayectoria Deuda vs Tesorería */}

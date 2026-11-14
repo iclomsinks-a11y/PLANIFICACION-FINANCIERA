@@ -13,6 +13,13 @@ export type BudgetFrequency = 'mensual' | 'trimestral' | 'anual' | 'puntual';
 
 export type BudgetItemType = 'ingreso' | 'gasto_ordinario' | 'gasto_extraordinario';
 
+export interface SalarioFuturo {
+  activo: boolean;
+  mes: number; // 1..12
+  anio: number;
+  importePrevisto: number;
+}
+
 export interface BudgetItem {
   id: string;
   nombre: string;
@@ -26,6 +33,8 @@ export interface BudgetItem {
   esHipoteca?: boolean;
   esSeguroVinculadoHipoteca?: boolean;
   esDeducibleAutonomo?: boolean;
+  esNomina?: boolean;
+  salarioFuturo?: SalarioFuturo;
   notas?: string;
 }
 
@@ -175,6 +184,13 @@ export interface IrpfComparisonResult {
 export type EstrategiaAmortizacion = 'reducir_cuota' | 'reducir_plazo' | 'hibrida';
 export type ModalidadFiscalHipoteca = 'ninguna' | 'conjunta_9040' | 'individual_18080';
 
+export interface FutureSalaryAdjustment {
+  id: string;
+  nombre: string;
+  fechaYYYYMM: string; // YYYY-MM a partir del cual aplica el nuevo salario
+  deltaMensual: number; // Diferencia mensual neta (importePrevisto - importeActual)
+}
+
 export interface MortgageSimulationInput {
   capitalPendienteInicial: number;
   fechaInicio: string; // YYYY-MM
@@ -188,6 +204,7 @@ export interface MortgageSimulationInput {
   colchonSeguridad: number; // 6.000 - 10.000 €
   taeCuentaRemunerada: number; // % TAE ej 2.5
   ahorroNetoMensualSinHipoteca: number; // Capacidad de ahorro antes de pagar hipoteca
+  ajustesSalarioFuturo?: FutureSalaryAdjustment[];
   estrategia: EstrategiaAmortizacion;
   umbralCuotaHibrida: number; // ej 300 €/mes para pasar de reducir cuota a reducir plazo
   modalidadFiscal: ModalidadFiscalHipoteca;

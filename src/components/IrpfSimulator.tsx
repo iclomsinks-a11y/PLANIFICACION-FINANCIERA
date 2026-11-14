@@ -607,8 +607,8 @@ export const IrpfSimulator: React.FC<IrpfSimulatorProps> = ({
               className="mt-1.5 w-full rounded-lg border border-slate-300 bg-white px-3.5 py-2.5 text-base dark:border-slate-700 dark:bg-slate-800 dark:text-white"
             >
               <option value="ninguna">No aplica</option>
-              <option value="general">Categoría General (1.200 €/año)</option>
-              <option value="especial">Categoría Especial (2.400 €/año)</option>
+              <option value="general">Categoría General (1.200 € + 600 €/hijo adicional)</option>
+              <option value="especial">Categoría Especial (2.400 € + 600 €/hijo adicional)</option>
             </select>
           </div>
         </div>

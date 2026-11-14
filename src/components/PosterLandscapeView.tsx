@@ -1,54 +1,41 @@
 import React, { useMemo } from 'react';
-import { Maximize2, Minimize2, Printer } from 'lucide-react';
+import { Download, Maximize2, Minimize2, Printer } from 'lucide-react';
+import { EconomySummaryResult } from '../engines/economyEngine';
 import { simulateIrpfComparison } from '../engines/irpfEngine';
 import { simulateMortgageAndTreasury } from '../engines/mortgageEngine';
-import { ProfileDefinition, ProfileState } from '../types/finance';
-import {
-  formatEUR,
-  formatYYYYMM,
-  toAnnualAmount,
-  toMonthlyEquivalent,
-} from '../utils/formatters';
+import { EconomyWorkspaceState } from '../types/economy';
+import { MortgageSimulationInput } from '../types/finance';
+import { formatEUR, formatYYYYMM } from '../utils/formatters';
 
 interface PosterLandscapeViewProps {
-  profile: ProfileDefinition;
-  state: ProfileState;
+  title: string;
+  irpfHabilitado: boolean;
+  state: EconomyWorkspaceState;
+  summary: EconomySummaryResult;
+  effectiveMortgageInput: MortgageSimulationInput;
   isFullscreen: boolean;
   onToggleFullscreen: () => void;
+  onExportReport: () => void;
 }
 
 export const PosterLandscapeView: React.FC<PosterLandscapeViewProps> = ({
-  profile,
+  title,
+  irpfHabilitado,
   state,
+  summary,
+  effectiveMortgageInput,
   isFullscreen,
   onToggleFullscreen,
+  onExportReport,
 }) => {
-  const budgetSummary = useMemo(() => {
-    let ingresos = 0;
-    let gastosOrd = 0;
-    let gastosExtraAnual = 0;
-    for (const item of state.budgetItems) {
-      if (!item.activo) continue;
-      if (item.tipo === 'ingreso') {
-        ingresos += toMonthlyEquivalent(item.importe, item.frecuencia);
-      } else if (item.tipo === 'gasto_ordinario') {
-        gastosOrd += toMonthlyEquivalent(item.importe, item.frecuencia);
-      } else {
-        gastosExtraAnual += toAnnualAmount(item.importe, item.frecuencia);
-      }
-    }
-    const gastosTotales = gastosOrd + gastosExtraAnual / 12;
-    return { ingresos, gastosOrd, gastosExtraAnual, gastosTotales };
-  }, [state.budgetItems]);
-
   const mortgageResult = useMemo(
-    () => simulateMortgageAndTreasury(state.mortgageInput),
-    [state.mortgageInput]
+    () => simulateMortgageAndTreasury(effectiveMortgageInput),
+    [effectiveMortgageInput]
   );
 
   const irpfResult = useMemo(
-    () => (profile.irpfHabilitado ? simulateIrpfComparison(state.irpfInput) : null),
-    [profile.irpfHabilitado, state.irpfInput]
+    () => (irpfHabilitado ? simulateIrpfComparison(state.irpfInput) : null),
+    [irpfHabilitado, state.irpfInput]
   );
 
   const aeatAnualActual = irpfResult
@@ -70,14 +57,22 @@ export const PosterLandscapeView: React.FC<PosterLandscapeViewProps> = ({
         <header className="flex flex-wrap items-center justify-between gap-4 border-b-2 border-slate-900 pb-4 dark:border-slate-200">
           <div>
             <h2 className="font-display text-2xl font-extrabold tracking-tight text-slate-900 lg:text-3xl dark:text-white">
-              Póster Ejecutivo Landscape · {profile.nombre}
+              Póster Ejecutivo Landscape · {title}
             </h2>
             <p className="mt-1 text-base text-slate-600 dark:text-slate-300">
               Lectura de alto contraste anti-presbicia · Capital amortizado separado de intereses
-              bancarios y previsión AEAT
+              bancarios, fondos reservados y previsión AEAT
             </p>
           </div>
-          <div className="no-print flex items-center gap-3">
+          <div className="no-print flex flex-wrap items-center gap-3">
+            <button
+              type="button"
+              onClick={onExportReport}
+              className="inline-flex items-center gap-2 rounded-lg border border-slate-300 bg-white px-4 py-2.5 text-base font-semibold text-slate-900 hover:bg-slate-100 dark:border-slate-700 dark:bg-slate-800 dark:text-white"
+            >
+              <Download className="h-5 w-5" />
+              Exportar JSON
+            </button>
             <button
               type="button"
               onClick={() => window.print()}
@@ -110,39 +105,38 @@ export const PosterLandscapeView: React.FC<PosterLandscapeViewProps> = ({
         <section className="grid grid-cols-1 gap-4 md:grid-cols-2 lg:grid-cols-3">
           <div className="rounded-xl border-2 border-slate-300 bg-white p-6 dark:border-slate-700 dark:bg-slate-900">
             <p className="text-base font-semibold text-slate-600 dark:text-slate-400">
-              Ingresos Mensuales Netos
+              Ingresos del Período ({summary.periodRange.label})
             </p>
-            <p className="mt-2 font-mono text-3xl font-bold text-slate-900 tabular-nums lg:text-4xl dark:text-white">
-              {formatEUR(budgetSummary.ingresos)}
+            <p className="mt-2 font-mono text-3xl font-bold text-emerald-700 tabular-nums lg:text-4xl dark:text-emerald-400">
+              {formatEUR(summary.ingresosPeriodo)}
             </p>
             <p className="mt-2 text-base text-slate-600 tabular-nums dark:text-slate-300">
-              Anualizado: {formatEUR(budgetSummary.ingresos * 12, false)}
+              Ahorro neto período: {formatEUR(summary.ahorroNetoPeriodo, false)}
             </p>
           </div>
 
           <div className="rounded-xl border-2 border-slate-300 bg-white p-6 dark:border-slate-700 dark:bg-slate-900">
             <p className="text-base font-semibold text-slate-600 dark:text-slate-400">
-              Gastos Totales Mensuales
+              Gastos Netos del Período
             </p>
-            <p className="mt-2 font-mono text-3xl font-bold text-slate-900 tabular-nums lg:text-4xl dark:text-white">
-              {formatEUR(budgetSummary.gastosTotales)}
+            <p className="mt-2 font-mono text-3xl font-bold text-red-700 tabular-nums lg:text-4xl dark:text-red-400">
+              {formatEUR(summary.gastosPeriodo)}
             </p>
             <p className="mt-2 text-base text-slate-600 tabular-nums dark:text-slate-300">
-              Extraordinarios: {formatEUR(budgetSummary.gastosExtraAnual, false)} / año
+              Pendientes/próximos: {formatEUR(summary.gastosPendientesYProximos, false)}
             </p>
           </div>
 
           <div className="rounded-xl border-2 border-slate-300 bg-white p-6 dark:border-slate-700 dark:bg-slate-900">
             <p className="text-base font-semibold text-slate-600 dark:text-slate-400">
-              Saldo Cuenta Remunerada
+              Disponible Real vs Fondos Reservados
             </p>
             <p className="mt-2 font-mono text-3xl font-bold text-blue-700 tabular-nums lg:text-4xl dark:text-blue-400">
-              {formatEUR(state.mortgageInput.saldoInicialEfectivo, false)} →{' '}
-              {formatEUR(mortgageResult.saldoFinalCuentaRemunerada, false)}
+              {formatEUR(summary.dineroRealmenteDisponible)}
             </p>
             <p className="mt-2 text-base text-slate-600 tabular-nums dark:text-slate-300">
-              Colchón intocable: {formatEUR(state.mortgageInput.colchonSeguridad, false)} · TAE{' '}
-              {state.mortgageInput.taeCuentaRemunerada.toFixed(2)}%
+              Cuentas {formatEUR(summary.totalEnCuentas, false)} · Reservado{' '}
+              {formatEUR(summary.totalReservadoFondos, false)}
             </p>
           </div>
 
@@ -177,12 +171,12 @@ export const PosterLandscapeView: React.FC<PosterLandscapeViewProps> = ({
           <div className="rounded-xl border-2 border-slate-900 bg-slate-900 p-6 text-white dark:border-white dark:bg-white dark:text-slate-900">
             <p className="text-base font-semibold opacity-80">Fecha Exacta de Cancelación</p>
             <p className="mt-2 font-display text-3xl font-extrabold tabular-nums lg:text-4xl">
-              {state.mortgageInput.capitalPendienteInicial > 0
+              {effectiveMortgageInput.capitalPendienteInicial > 0
                 ? formatYYYYMM(mortgageResult.fechaCancelacionExacta)
                 : 'Sin hipoteca'}
             </p>
             <p className="mt-2 text-base opacity-85 tabular-nums">
-              {state.mortgageInput.capitalPendienteInicial > 0
+              {effectiveMortgageInput.capitalPendienteInicial > 0
                 ? `${mortgageResult.mesesAhorradosVsVencimiento} meses antes · Ahorro ${formatEUR(mortgageResult.ahorroInteresesBancarios, false)}`
                 : `Patrimonio acumulado: ${formatEUR(mortgageResult.saldoFinalCuentaRemunerada, false)}`}
             </p>

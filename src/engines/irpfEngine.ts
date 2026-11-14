@@ -30,10 +30,10 @@ const ESCALAS_AUTONOMICAS: Record<ComunidadAutonoma, TaxBracket[]> = {
     { upTo: Infinity, rate: 0.225 },
   ],
   madrid: [
-    { upTo: 12960.45, rate: 0.085 },
-    { upTo: 18433.2, rate: 0.107 },
-    { upTo: 34350.45, rate: 0.128 },
-    { upTo: 55601.85, rate: 0.174 },
+    { upTo: 13362.22, rate: 0.085 },
+    { upTo: 19004.63, rate: 0.107 },
+    { upTo: 35425.68, rate: 0.128 },
+    { upTo: 57320.4, rate: 0.174 },
     { upTo: Infinity, rate: 0.205 },
   ],
   cataluna: [
@@ -106,6 +106,73 @@ export const COMUNIDADES_AUTONOMAS_LABELS: Record<ComunidadAutonoma, string> = {
   otra_comun: 'Resto CC. AA. (Régimen Común)',
 };
 
+export interface IrpfReglaNormativa {
+  id: string;
+  concepto: string;
+  norma: string;
+  articulo: string;
+  vigencia: string;
+  importeOLimite: string;
+  fuenteOficial: string;
+}
+
+export const IRPF_PARAMETROS_NORMATIVOS: IrpfReglaNormativa[] = [
+  {
+    id: 'min-contrib',
+    concepto: 'Mínimo del contribuyente (general y >65 / >75)',
+    norma: 'Ley 35/2006 (LIRPF)',
+    articulo: 'Art. 57 y Art. 84.2.2.º',
+    vigencia: '2024 – 2026',
+    importeOLimite: '5.550 € (+1.150 € >65 / +1.400 € >75 por cónyuge en conjunta)',
+    fuenteOficial: 'AEAT Manual Práctico Renta',
+  },
+  {
+    id: 'min-desc',
+    concepto: 'Mínimo por descendientes (<25 años o disc. ≥33%, rentas ≤8.000 €)',
+    norma: 'Ley 35/2006 (LIRPF)',
+    articulo: 'Art. 58',
+    vigencia: '2024 – 2026',
+    importeOLimite: '2.400 € / 2.700 € / 4.000 € / 4.500 € (+2.800 € <3 años)',
+    fuenteOficial: 'AEAT Manual Práctico Renta',
+  },
+  {
+    id: 'red-art20',
+    concepto: 'Reducción obtención rendimientos del trabajo',
+    norma: 'Ley 35/2006 (modif. RDL 4/2024)',
+    articulo: 'Art. 20 y Art. 84.2.1.º',
+    vigencia: '2024 – 2026',
+    importeOLimite: 'Hasta 7.302 € (RNT ≤ 14.852 €; decaimiento 1,75 y 1,14 hasta 19.747,50 €)',
+    fuenteOficial: 'BOE / AEAT',
+  },
+  {
+    id: 'red-conjunta',
+    concepto: 'Reducción por tributación conjunta (Matrimonio vs Monoparental)',
+    norma: 'Ley 35/2006 (LIRPF)',
+    articulo: 'Art. 82 y Art. 84.2',
+    vigencia: '2024 – 2026',
+    importeOLimite: '3.400 € (Matrimonio) / 2.150 € (Monoparental sin convivencia)',
+    fuenteOficial: 'AEAT Criterio Art. 82/84',
+  },
+  {
+    id: 'viv-dt18',
+    concepto: 'Deducción transitoria inversión vivienda habitual (< 01/01/2013)',
+    norma: 'Ley 35/2006 (LIRPF)',
+    articulo: 'Disposición Transitoria 18.ª',
+    vigencia: 'Régimen transitorio vigente',
+    importeOLimite: '15% sobre base máx. 9.040 €/declaración (18.080 € en 2 individuales)',
+    fuenteOficial: 'AEAT / Consultas DGT',
+  },
+  {
+    id: 'eficiencia-da50',
+    concepto: 'Deducciones por obras de mejora de eficiencia energética',
+    norma: 'Ley 35/2006 (prorrogada)',
+    articulo: 'Disposición Adicional 50.ª',
+    vigencia: '2024 – 2026 (con CEE previo/posterior)',
+    importeOLimite: '20% (máx 5.000 €) / 40% (máx 7.500 €) / 60% (máx 5.000 €/año)',
+    fuenteOficial: 'BOE / AEAT',
+  },
+];
+
 function calcularCuotaEscala(base: number, brackets: TaxBracket[]): number {
   if (base <= 0) return 0;
   let quota = 0;
@@ -152,25 +219,55 @@ function calcularMinimoContribuyenteIndividual(edad: number, discapacidad33: boo
   return minimo;
 }
 
-function calcularRendimientoTrabajo(c: ContribuyenteIrpfInput, otrasRentasNetas: number) {
-  if (c.salarioBrutoAnual <= 0) {
+// Art. 84.2.2.º LIRPF: en tributación conjunta matrimonial, el mínimo base de 5.550 € es único,
+// pero los incrementos por edad (>65 / >75) y discapacidad se aplican por cada cónyuge que los cumpla.
+function calcularMinimoContribuyenteConjuntaMatrimonio(
+  d1: ContribuyenteIrpfInput,
+  d2: ContribuyenteIrpfInput
+): number {
+  let minimo = 5550;
+  for (const c of [d1, d2]) {
+    if (c.edad > 65) minimo += 1150;
+    if (c.edad > 75) minimo += 1400;
+    if (c.discapacidad33) minimo += 3000;
+  }
+  return minimo;
+}
+
+// Art. 19.2.f y Art. 20 LIRPF (redacción vigente desde RDL 4/2024):
+// Tramo 1: RNT <= 14.852 -> 7.302 €
+// Tramo 2: 14.852 < RNT <= 17.673,52 -> 7.302 - 1,75 * (RNT - 14.852)
+// Tramo 3: 17.673,52 < RNT <= 19.747,50 -> 2.364,34 - 1,14 * (RNT - 17.673,52)
+function calcularRendimientoTrabajoDesdeTotales(
+  salarioBrutoTotal: number,
+  cotizacionSSTotal: number,
+  otrasRentasNetas: number
+) {
+  if (salarioBrutoTotal <= 0) {
     return { rnt: 0, reduccionArt20: 0, rntr: 0 };
   }
-  const gastosDeducibles = Math.min(
-    c.salarioBrutoAnual,
-    c.cotizacionSeguridadSocial + 2000
-  );
-  const rnt = Math.max(0, c.salarioBrutoAnual - gastosDeducibles);
+  const gastosDeducibles = Math.min(salarioBrutoTotal, cotizacionSSTotal + 2000);
+  const rnt = Math.max(0, salarioBrutoTotal - gastosDeducibles);
   let reduccionArt20 = 0;
   if (otrasRentasNetas <= 6500) {
     if (rnt <= 14852) {
       reduccionArt20 = 7302;
-    } else if (rnt <= 19747.5) {
+    } else if (rnt <= 17673.52) {
       reduccionArt20 = Math.max(0, 7302 - 1.75 * (rnt - 14852));
+    } else if (rnt <= 19747.5) {
+      reduccionArt20 = Math.max(0, 2364.34 - 1.14 * (rnt - 17673.52));
     }
   }
   const rntr = Math.max(0, rnt - reduccionArt20);
   return { rnt, reduccionArt20, rntr };
+}
+
+function calcularRendimientoTrabajo(c: ContribuyenteIrpfInput, otrasRentasNetas: number) {
+  return calcularRendimientoTrabajoDesdeTotales(
+    c.salarioBrutoAnual,
+    c.cotizacionSeguridadSocial,
+    otrasRentasNetas
+  );
 }
 
 function calcularRendimientoAutonomo(c: ContribuyenteIrpfInput) {
@@ -211,25 +308,43 @@ function calcularDeduccionAutonomica(
   ccaa: ComunidadAutonoma,
   c: ContribuyenteIrpfInput,
   baseImponibleTotal: number,
-  esConjunta: boolean
+  esConjunta: boolean,
+  numDescendientesElegibles: number,
+  prorrateoDescendientes: number
 ): number {
   let total = 0;
   if (ccaa === 'andalucia') {
-    // 15% gastos escolares idiomas/informática máx 150 €/hijo
-    if (c.gastosEducativosIdiomasInformatica > 0) {
-      total += Math.min(300, c.gastosEducativosIdiomasInformatica * 0.15);
+    // Art. 14 Ley 5/2021 Andalucía: 15% gastos enseñanza idiomas/informática, máx 150 €/descendiente
+    // Límite de suma de BI General + Ahorro: 80.000 € individual / 100.000 € conjunta
+    const limiteEducacion = esConjunta ? 100000 : 80000;
+    if (
+      c.gastosEducativosIdiomasInformatica > 0 &&
+      numDescendientesElegibles > 0 &&
+      baseImponibleTotal <= limiteEducacion
+    ) {
+      const topeEducacion = 150 * numDescendientesElegibles * prorrateoDescendientes;
+      total += Math.min(topeEducacion, c.gastosEducativosIdiomasInformatica * 0.15);
     }
-    // Alquiler vivienda habitual jóvenes <= 35 o > 65 (15% hasta 600 €/año o 900 €)
+    // Art. 11 Ley 5/2021 Andalucía: Alquiler vivienda habitual < 35 años o >= 65 años (15% hasta 600 €/año)
     const limiteRentas = esConjunta ? 30000 : 25000;
-    if (c.gastosAlquilerAnuales > 0 && (c.edad <= 35 || c.edad >= 65) && baseImponibleTotal <= limiteRentas) {
+    if (
+      c.gastosAlquilerAnuales > 0 &&
+      (c.edad < 35 || c.edad >= 65) &&
+      baseImponibleTotal <= limiteRentas
+    ) {
       total += Math.min(600, c.gastosAlquilerAnuales * 0.15);
     }
   } else if (ccaa === 'madrid') {
-    if (c.gastosAlquilerAnuales > 0 && c.edad < 35 && baseImponibleTotal <= (esConjunta ? 37200 : 26414.22)) {
+    if (
+      c.gastosAlquilerAnuales > 0 &&
+      c.edad < 35 &&
+      baseImponibleTotal <= (esConjunta ? 37200 : 26414.22)
+    ) {
       total += Math.min(1237.2, c.gastosAlquilerAnuales * 0.3);
     }
-    if (c.gastosEducativosIdiomasInformatica > 0) {
-      total += Math.min(412.4, c.gastosEducativosIdiomasInformatica * 0.15);
+    if (c.gastosEducativosIdiomasInformatica > 0 && numDescendientesElegibles > 0) {
+      const topeMadrid = 412.4 * numDescendientesElegibles * prorrateoDescendientes;
+      total += Math.min(topeMadrid, c.gastosEducativosIdiomasInformatica * 0.15);
     }
   } else if (ccaa === 'valencia') {
     if (c.gastosAlquilerAnuales > 0 && baseImponibleTotal <= 30000) {
@@ -241,6 +356,21 @@ function calcularDeduccionAutonomica(
     }
   }
   return total;
+}
+
+function calcularDeduccionFamiliaNumerosaTotal(
+  categoria: 'ninguna' | 'general' | 'especial',
+  numDescendientesElegibles: number
+): number {
+  if (categoria === 'general') {
+    const exceso = Math.max(0, numDescendientesElegibles - 3);
+    return 1200 + exceso * 600;
+  }
+  if (categoria === 'especial') {
+    const exceso = Math.max(0, numDescendientesElegibles - 5);
+    return 2400 + exceso * 600;
+  }
+  return 0;
 }
 
 function liquidarDeclaracion(params: {
@@ -437,6 +567,13 @@ export function simulateIrpfComparison(input: IrpfSimulationInput): IrpfComparis
   const prorrateoInd =
     haySegundoDeclarante || input.custodiaCompartida ? 0.5 : 1.0;
 
+  const numDescendientesElegibles = input.descendientes.filter(
+    (d) =>
+      (d.edad < 25 || d.discapacidad33) &&
+      !d.rentasSuperiores8000 &&
+      !d.presentaIrpfMas1800
+  ).length;
+
   // Individual 1
   const aut1 = calcularRendimientoAutonomo(d1);
   const trab1 = calcularRendimientoTrabajo(d1, aut1.neto + d1.interesesCuentaRemunerada);
@@ -445,8 +582,10 @@ export function simulateIrpfComparison(input: IrpfSimulationInput): IrpfComparis
   const maternidad1 =
     d1.madreTrabajadoraHijosMenores3 * 1200 +
     Math.min(d1.madreTrabajadoraHijosMenores3 * 1000, d1.gastosGuarderiaAnuales);
-  const famNumTotal =
-    input.familiaNumerosa === 'especial' ? 2400 : input.familiaNumerosa === 'general' ? 1200 : 0;
+  const famNumTotal = calcularDeduccionFamiliaNumerosaTotal(
+    input.familiaNumerosa,
+    numDescendientesElegibles
+  );
   const famNumInd1 = haySegundoDeclarante ? famNumTotal * 0.5 : famNumTotal;
 
   const ind1 = liquidarDeclaracion({
@@ -472,7 +611,9 @@ export function simulateIrpfComparison(input: IrpfSimulationInput): IrpfComparis
       input.comunidadAutonoma,
       d1,
       trab1.rntr + aut1.neto + d1.interesesCuentaRemunerada,
-      false
+      false,
+      numDescendientesElegibles,
+      prorrateoInd
     ),
     retencionesYPagosCuenta:
       d1.retencionesTrabajo +
@@ -515,7 +656,9 @@ export function simulateIrpfComparison(input: IrpfSimulationInput): IrpfComparis
         input.comunidadAutonoma,
         d2,
         trab2.rntr + aut2.neto + d2.interesesCuentaRemunerada,
-        false
+        false,
+        numDescendientesElegibles,
+        0.5
       ),
       retencionesYPagosCuenta:
         d2.retencionesTrabajo +
@@ -562,25 +705,25 @@ export function simulateIrpfComparison(input: IrpfSimulationInput): IrpfComparis
 
   let conjunta: DeclaracionBreakdown;
   if (input.tipoUnidadFamiliar === 'matrimonio' && conjuntaElegible) {
+    const aut2Conj = calcularRendimientoAutonomo(d2);
     const autConj = {
-      previo: aut1.previo + (ind2 ? aut1.previo * 0 + calcularRendimientoAutonomo(d2).previo : 0),
-      dificil: aut1.dificilJustificacion + calcularRendimientoAutonomo(d2).dificilJustificacion,
-      neto: aut1.neto + calcularRendimientoAutonomo(d2).neto,
+      previo: aut1.previo + aut2Conj.previo,
+      dificil: aut1.dificilJustificacion + aut2Conj.dificilJustificacion,
+      neto: aut1.neto + aut2Conj.neto,
     };
-    const trab2 = calcularRendimientoTrabajo(
-      d2,
-      calcularRendimientoAutonomo(d2).neto + d2.interesesCuentaRemunerada
+    const interesesConjuntos = d1.interesesCuentaRemunerada + d2.interesesCuentaRemunerada;
+
+    // Art. 84.2.1.º LIRPF: En tributación conjunta, los 2.000 € de otros gastos (Art. 19.2.f)
+    // y la reducción por obtención de rendimientos del trabajo (Art. 20) se aplican UNA SOLA VEZ
+    // sobre la suma de rendimientos del trabajo de ambos cónyuges.
+    const trabConjunta = calcularRendimientoTrabajoDesdeTotales(
+      d1.salarioBrutoAnual + d2.salarioBrutoAnual,
+      d1.cotizacionSeguridadSocial + d2.cotizacionSeguridadSocial,
+      autConj.neto + interesesConjuntos
     );
-    // Nota Art. 57 y 84 LIRPF: en conjunta matrimonial UN ÚNICO mínimo de 5.550 € (no 11.100 €)
-    const maxEdad = Math.max(d1.edad, d2.edad);
-    const minContribConj = calcularMinimoContribuyenteIndividual(
-      maxEdad,
-      d1.discapacidad33 || d2.discapacidad33
-    );
-    const minDescConj = calcularMinimoDescendientes(
-      input.descendientes,
-      input.custodiaCompartida ? 0.5 : 1.0
-    );
+
+    const minContribConj = calcularMinimoContribuyenteConjuntaMatrimonio(d1, d2);
+    const minDescConj = calcularMinimoDescendientes(input.descendientes, 1.0);
 
     const maternidadConj =
       maternidad1 +
@@ -591,13 +734,13 @@ export function simulateIrpfComparison(input: IrpfSimulationInput): IrpfComparis
       titulo: 'Tributación Conjunta (Matrimonio)',
       elegible: true,
       ccaa: input.comunidadAutonoma,
-      rnt: trab1.rnt + trab2.rnt,
-      reduccionArt20: trab1.reduccionArt20 + trab2.reduccionArt20,
-      rntr: trab1.rntr + trab2.rntr,
+      rnt: trabConjunta.rnt,
+      reduccionArt20: trabConjunta.reduccionArt20,
+      rntr: trabConjunta.rntr,
       autonomoPrevio: autConj.previo,
       autonomoDificil: autConj.dificil,
       autonomoNeto: autConj.neto,
-      interesesAhorro: d1.interesesCuentaRemunerada + d2.interesesCuentaRemunerada,
+      interesesAhorro: interesesConjuntos,
       reduccionConjunta,
       minimoContribuyente: minContribConj,
       minimoDescendientes: minDescConj,
@@ -609,19 +752,24 @@ export function simulateIrpfComparison(input: IrpfSimulationInput): IrpfComparis
       deduccionFamiliaNumerosa: famNumTotal,
       deduccionAutonomica: calcularDeduccionAutonomica(
         input.comunidadAutonoma,
-        d1,
-        trab1.rntr + trab2.rntr + autConj.neto,
-        true
+        {
+          ...d1,
+          gastosEducativosIdiomasInformatica:
+            d1.gastosEducativosIdiomasInformatica + d2.gastosEducativosIdiomasInformatica,
+          gastosAlquilerAnuales: d1.gastosAlquilerAnuales + d2.gastosAlquilerAnuales,
+        },
+        trabConjunta.rntr + autConj.neto + interesesConjuntos,
+        true,
+        numDescendientesElegibles,
+        1.0
       ),
       retencionesYPagosCuenta:
         ind1.retencionesYPagosCuenta + (ind2 ? ind2.retencionesYPagosCuenta : 0),
     });
   } else {
     // Monoparental o Pareja de hecho (Progenitor 1 con hijos + Progenitor 2 individual en su caso)
-    const minDescConj = calcularMinimoDescendientes(
-      input.descendientes,
-      input.custodiaCompartida ? 0.5 : 1.0
-    );
+    const prorrateoConjMono = input.custodiaCompartida ? 0.5 : 1.0;
+    const minDescConj = calcularMinimoDescendientes(input.descendientes, prorrateoConjMono);
     conjunta = liquidarDeclaracion({
       titulo:
         input.tipoUnidadFamiliar === 'pareja_de_hecho'
@@ -648,8 +796,10 @@ export function simulateIrpfComparison(input: IrpfSimulationInput): IrpfComparis
       deduccionAutonomica: calcularDeduccionAutonomica(
         input.comunidadAutonoma,
         d1,
-        trab1.rntr + aut1.neto,
-        true
+        trab1.rntr + aut1.neto + d1.interesesCuentaRemunerada,
+        true,
+        numDescendientesElegibles,
+        prorrateoConjMono
       ),
       retencionesYPagosCuenta: ind1.retencionesYPagosCuenta,
     });
