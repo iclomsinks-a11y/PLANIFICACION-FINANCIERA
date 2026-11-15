@@ -1,0 +1,53 @@
+{
+  "entities": {
+    "UserWorkspace": {
+      "title": "UserWorkspace",
+      "description": "Preferencias del espacio de trabajo y control de facturas de Gmail procesadas por usuario autenticado",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string", "description": "Firebase Auth UID del propietario" },
+        "email": { "type": "string", "description": "Correo electrónico verificado" },
+        "displayName": { "type": "string", "description": "Nombre visible del usuario" },
+        "activeSupuestoId": { "type": "string", "description": "Identificador del supuesto activo" },
+        "nextSupuestoNumber": { "type": "integer", "description": "Siguiente número correlativo de supuesto" },
+        "dismissedGmailIds": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "IDs de mensajes de Gmail ya adjuntados o descartados"
+        },
+        "updatedAt": { "type": "string", "format": "date-time", "description": "Marca temporal del servidor" }
+      },
+      "required": ["uid", "activeSupuestoId", "nextSupuestoNumber", "updatedAt"]
+    },
+    "Supuesto": {
+      "title": "Supuesto",
+      "description": "Supuesto económico, hipotecario y fiscal completo perteneciente a un usuario",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "description": "Identificador del documento del supuesto" },
+        "ownerUid": { "type": "string", "description": "Firebase Auth UID propietario" },
+        "numero": { "type": "integer", "description": "Número correlativo del supuesto" },
+        "nombre": { "type": "string", "description": "Nombre asignado al supuesto" },
+        "updatedAt": { "type": "string", "format": "date-time", "description": "Marca temporal del servidor" },
+        "state": {
+          "type": "object",
+          "description": "Estado completo estructurado (miembros, cuentas, objetivos, categorías COICOP, movimientos, hipoteca e IRPF)"
+        }
+      },
+      "required": ["id", "ownerUid", "numero", "nombre", "updatedAt", "state"]
+    }
+  },
+  "auth": {
+    "providers": ["google.com"]
+  },
+  "firestore": {
+    "/users/{userId}": {
+      "schema": { "$ref": "#/entities/UserWorkspace" },
+      "description": "Documento raíz del espacio de trabajo privado de cada usuario"
+    },
+    "/users/{userId}/supuestos/{supuestoId}": {
+      "schema": { "$ref": "#/entities/Supuesto" },
+      "description": "Subcolección privada con los supuestos económicos guardados del usuario"
+    }
+  }
+}

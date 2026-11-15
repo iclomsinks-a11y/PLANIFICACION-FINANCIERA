@@ -3,8 +3,10 @@ import {
   Check,
   Copy,
   Download,
+  Mail,
   Paperclip,
   Plus,
+  ScanLine,
   Search,
   Trash2,
   X,
@@ -18,17 +20,21 @@ import {
   MovementType,
   PeriodPreset,
 } from '../types/economy';
+import { computeFinancedInstallment } from '../utils/financing';
 import { downloadTextFile, formatEUR } from '../utils/formatters';
 
 interface MovementsLedgerProps {
   state: EconomyWorkspaceState;
   summary: EconomySummaryResult;
   periodPreset: PeriodPreset;
+  pendingGmailCount?: number;
   onChangePeriod: (preset: PeriodPreset) => void;
   onAddMovement: (mov: Omit<FinancialMovement, 'id'>) => void;
   onUpdateMovement: (mov: FinancialMovement) => void;
   onDeleteMovement: (id: string) => void;
   onConfirmMovement: (id: string) => void;
+  onOpenGeminiAssistant?: (mode: 'texto' | 'ocr') => void;
+  onOpenGmailScanner?: () => void;
 }
 
 const MOVEMENT_TYPE_LABELS: Record<MovementType, string> = {
@@ -69,6 +75,10 @@ interface MovementFormDraft {
   esHipoteca: boolean;
   esSeguroVinculadoHipoteca: boolean;
   esDeducibleAutonomo: boolean;
+  financiado: boolean;
+  importeTotalFinanciado: string;
+  mensualidadesTotal: string;
+  tinFinanciacionPct: string;
   observaciones: string;
   justificanteNombre: string;
 }
@@ -77,11 +87,14 @@ export const MovementsLedger: React.FC<MovementsLedgerProps> = ({
   state,
   summary,
   periodPreset,
+  pendingGmailCount = 0,
   onChangePeriod,
   onAddMovement,
   onUpdateMovement,
   onDeleteMovement,
   onConfirmMovement,
+  onOpenGeminiAssistant,
+  onOpenGmailScanner,
 }) => {
   const [searchTerm, setSearchTerm] = useState('');
   const [filterType, setFilterType] = useState<'todos' | MovementType>('todos');
@@ -127,6 +140,15 @@ export const MovementsLedger: React.FC<MovementsLedgerProps> = ({
       esHipoteca: Boolean(preset?.esHipoteca),
       esSeguroVinculadoHipoteca: Boolean(preset?.esSeguroVinculadoHipoteca),
       esDeducibleAutonomo: Boolean(preset?.esDeducibleAutonomo),
+      financiado: Boolean(preset?.financiado),
+      importeTotalFinanciado: preset?.importeTotalFinanciado
+        ? String(preset.importeTotalFinanciado)
+        : '',
+      mensualidadesTotal: preset?.mensualidadesTotal
+        ? String(preset.mensualidadesTotal)
+        : '12',
+      tinFinanciacionPct:
+        preset?.tinFinanciacionPct !== undefined ? String(preset.tinFinanciacionPct) : '0',
       observaciones: preset?.observaciones ?? '',
       justificanteNombre: preset?.justificanteNombre ?? '',
     };
@@ -176,9 +198,16 @@ export const MovementsLedger: React.FC<MovementsLedgerProps> = ({
     if (!draft.concepto.trim() || Number.isNaN(importe) || importe <= 0 || !draft.cuentaId) return;
     if (draft.tipo === 'transferencia' && draft.cuentaId === draft.cuentaDestinoId) return;
 
+    const finTotal = Number(draft.importeTotalFinanciado) || 0;
+    const finMeses = Math.max(1, Math.floor(Number(draft.mensualidadesTotal) || 12));
+    const finTin = Math.max(0, Number(draft.tinFinanciacionPct) || 0);
+    const finCalc = draft.financiado
+      ? computeFinancedInstallment(finTotal > 0 ? finTotal : importe, finMeses, finTin)
+      : null;
+
     const payload: Omit<FinancialMovement, 'id'> = {
       tipo: draft.tipo,
-      importe,
+      importe: draft.financiado && finCalc ? finCalc.cuotaMensual : importe,
       fecha: draft.fecha,
       concepto: draft.concepto.trim(),
       categoriaId: draft.tipo === 'transferencia' ? 'cat-finanzas' : draft.categoriaId,
@@ -191,11 +220,20 @@ export const MovementsLedger: React.FC<MovementsLedgerProps> = ({
       miembroId: draft.miembroId,
       visibilidad: draft.visibilidad,
       repartoCompartido: draft.repartoCompartido || undefined,
-      recurrencia: draft.recurrencia,
+      recurrencia: draft.financiado ? 'mensual' : draft.recurrencia,
       estado: draft.estado,
       esHipoteca: draft.esHipoteca || undefined,
       esSeguroVinculadoHipoteca: draft.esSeguroVinculadoHipoteca || undefined,
       esDeducibleAutonomo: draft.esDeducibleAutonomo || undefined,
+      financiado: draft.financiado || undefined,
+      importeTotalFinanciado: draft.financiado
+        ? finTotal > 0
+          ? finTotal
+          : importe
+        : undefined,
+      mensualidadesTotal: draft.financiado ? finMeses : undefined,
+      tinFinanciacionPct: draft.financiado ? finTin : undefined,
+      cuotaMensualFinanciada: draft.financiado && finCalc ? finCalc.cuotaMensual : undefined,
       observaciones: draft.observaciones.trim() || undefined,
       justificanteNombre: draft.justificanteNombre || undefined,
     };
@@ -315,7 +353,27 @@ export const MovementsLedger: React.FC<MovementsLedgerProps> = ({
               ingresos ni gastos, y las devoluciones minoran el gasto neto.
             </p>
           </div>
-          <div className="flex flex-wrap items-center gap-3">
+          <div className="flex flex-wrap items-center gap-2.5">
+            {onOpenGeminiAssistant && (
+              <button
+                type="button"
+                onClick={() => onOpenGeminiAssistant('ocr')}
+                className="inline-flex items-center gap-2 rounded-lg border border-blue-200 bg-blue-50 px-3.5 py-2.5 text-sm font-semibold text-blue-800 hover:bg-blue-100 dark:border-blue-800 dark:bg-blue-950/40 dark:text-blue-300"
+              >
+                <ScanLine className="h-4 w-4" />
+                OCR Ticket / Asistente IA
+              </button>
+            )}
+            {onOpenGmailScanner && (
+              <button
+                type="button"
+                onClick={onOpenGmailScanner}
+                className="inline-flex items-center gap-2 rounded-lg border border-slate-300 bg-white px-3.5 py-2.5 text-sm font-semibold text-slate-800 hover:bg-slate-50 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-100"
+              >
+                <Mail className="h-4 w-4" />
+                Facturas Gmail{pendingGmailCount > 0 ? ` (${pendingGmailCount})` : ''}
+              </button>
+            )}
             <button
               type="button"
               onClick={handleExportCsv}
@@ -729,52 +787,172 @@ export const MovementsLedger: React.FC<MovementsLedgerProps> = ({
             </div>
 
             {draft.tipo === 'gasto' && (
-              <div className="flex flex-wrap gap-6 pt-1 text-sm font-medium text-slate-700 dark:text-slate-300">
-                <label className="inline-flex items-center gap-2">
-                  <input
-                    type="checkbox"
-                    checked={draft.repartoCompartido}
-                    onChange={(e) =>
-                      setDraft((p) => ({ ...p, repartoCompartido: e.target.checked }))
-                    }
-                    className="h-4 w-4 rounded border-slate-300"
-                  />
-                  <span>Gasto compartido entre adultos (50/50)</span>
-                </label>
+              <div className="space-y-4 pt-1">
+                <div className="flex flex-wrap gap-6 text-sm font-medium text-slate-700 dark:text-slate-300">
+                  <label className="inline-flex items-center gap-2">
+                    <input
+                      type="checkbox"
+                      checked={draft.financiado}
+                      onChange={(e) => {
+                        const checked = e.target.checked;
+                        const totalBase =
+                          Number(draft.importeTotalFinanciado) || Number(draft.importe) || 600;
+                        const meses = Math.max(2, Number(draft.mensualidadesTotal) || 12);
+                        const tin = Math.max(0, Number(draft.tinFinanciacionPct) || 0);
+                        const calc = computeFinancedInstallment(totalBase, meses, tin);
+                        setDraft((p) => ({
+                          ...p,
+                          financiado: checked,
+                          importeTotalFinanciado: checked ? String(totalBase) : p.importeTotalFinanciado,
+                          importe: checked ? String(calc.cuotaMensual) : p.importe,
+                          recurrencia: checked ? 'mensual' : p.recurrencia,
+                        }));
+                      }}
+                      className="h-4 w-4 rounded border-slate-300"
+                    />
+                    <span>Gasto financiado a plazos (importe total y mensualidades)</span>
+                  </label>
 
-                <label className="inline-flex items-center gap-2">
-                  <input
-                    type="checkbox"
-                    checked={draft.esHipoteca}
-                    onChange={(e) => setDraft((p) => ({ ...p, esHipoteca: e.target.checked }))}
-                    className="h-4 w-4 rounded border-slate-300"
-                  />
-                  <span>Cuota de hipoteca (DT 18.ª / Tesorería)</span>
-                </label>
+                  <label className="inline-flex items-center gap-2">
+                    <input
+                      type="checkbox"
+                      checked={draft.repartoCompartido}
+                      onChange={(e) =>
+                        setDraft((p) => ({ ...p, repartoCompartido: e.target.checked }))
+                      }
+                      className="h-4 w-4 rounded border-slate-300"
+                    />
+                    <span>Gasto compartido entre adultos (50/50)</span>
+                  </label>
 
-                <label className="inline-flex items-center gap-2">
-                  <input
-                    type="checkbox"
-                    checked={draft.esSeguroVinculadoHipoteca}
-                    onChange={(e) =>
-                      setDraft((p) => ({ ...p, esSeguroVinculadoHipoteca: e.target.checked }))
-                    }
-                    className="h-4 w-4 rounded border-slate-300"
-                  />
-                  <span>Seguro vinculado a hipoteca</span>
-                </label>
+                  <label className="inline-flex items-center gap-2">
+                    <input
+                      type="checkbox"
+                      checked={draft.esHipoteca}
+                      onChange={(e) => setDraft((p) => ({ ...p, esHipoteca: e.target.checked }))}
+                      className="h-4 w-4 rounded border-slate-300"
+                    />
+                    <span>Cuota de hipoteca (DT 18.ª / Tesorería)</span>
+                  </label>
 
-                <label className="inline-flex items-center gap-2">
-                  <input
-                    type="checkbox"
-                    checked={draft.esDeducibleAutonomo}
-                    onChange={(e) =>
-                      setDraft((p) => ({ ...p, esDeducibleAutonomo: e.target.checked }))
-                    }
-                    className="h-4 w-4 rounded border-slate-300"
-                  />
-                  <span>Deducible actividad económica / AEAT</span>
-                </label>
+                  <label className="inline-flex items-center gap-2">
+                    <input
+                      type="checkbox"
+                      checked={draft.esSeguroVinculadoHipoteca}
+                      onChange={(e) =>
+                        setDraft((p) => ({ ...p, esSeguroVinculadoHipoteca: e.target.checked }))
+                      }
+                      className="h-4 w-4 rounded border-slate-300"
+                    />
+                    <span>Seguro vinculado a hipoteca</span>
+                  </label>
+
+                  <label className="inline-flex items-center gap-2">
+                    <input
+                      type="checkbox"
+                      checked={draft.esDeducibleAutonomo}
+                      onChange={(e) =>
+                        setDraft((p) => ({ ...p, esDeducibleAutonomo: e.target.checked }))
+                      }
+                      className="h-4 w-4 rounded border-slate-300"
+                    />
+                    <span>Deducible actividad económica / AEAT</span>
+                  </label>
+                </div>
+
+                {draft.financiado && (
+                  <div className="grid grid-cols-1 gap-4 rounded-xl border border-blue-200 bg-blue-50/50 p-4 md:grid-cols-4 dark:border-blue-900 dark:bg-blue-950/20">
+                    <label className="space-y-1 text-sm font-semibold text-slate-700 dark:text-slate-300">
+                      <span>Importe total financiado (€)</span>
+                      <input
+                        type="number"
+                        min="1"
+                        step="0.01"
+                        value={draft.importeTotalFinanciado}
+                        onChange={(e) => {
+                          const totalVal = Number(e.target.value) || 0;
+                          const meses = Math.max(1, Number(draft.mensualidadesTotal) || 12);
+                          const tin = Math.max(0, Number(draft.tinFinanciacionPct) || 0);
+                          const calc = computeFinancedInstallment(totalVal, meses, tin);
+                          setDraft((p) => ({
+                            ...p,
+                            importeTotalFinanciado: e.target.value,
+                            importe: String(calc.cuotaMensual),
+                            recurrencia: 'mensual',
+                          }));
+                        }}
+                        className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 font-mono text-base tabular-nums dark:border-slate-700 dark:bg-slate-800 dark:text-white"
+                      />
+                    </label>
+
+                    <label className="space-y-1 text-sm font-semibold text-slate-700 dark:text-slate-300">
+                      <span>Mensualidades (meses)</span>
+                      <input
+                        type="number"
+                        min="2"
+                        max="120"
+                        value={draft.mensualidadesTotal}
+                        onChange={(e) => {
+                          const meses = Math.max(1, Math.floor(Number(e.target.value) || 1));
+                          const totalVal = Number(draft.importeTotalFinanciado) || 0;
+                          const tin = Math.max(0, Number(draft.tinFinanciacionPct) || 0);
+                          const calc = computeFinancedInstallment(totalVal, meses, tin);
+                          setDraft((p) => ({
+                            ...p,
+                            mensualidadesTotal: e.target.value,
+                            importe: String(calc.cuotaMensual),
+                            recurrencia: 'mensual',
+                          }));
+                        }}
+                        className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 font-mono text-base tabular-nums dark:border-slate-700 dark:bg-slate-800 dark:text-white"
+                      />
+                    </label>
+
+                    <label className="space-y-1 text-sm font-semibold text-slate-700 dark:text-slate-300">
+                      <span>TIN financiación (% anual)</span>
+                      <input
+                        type="number"
+                        min="0"
+                        step="0.1"
+                        value={draft.tinFinanciacionPct}
+                        onChange={(e) => {
+                          const tin = Math.max(0, Number(e.target.value) || 0);
+                          const totalVal = Number(draft.importeTotalFinanciado) || 0;
+                          const meses = Math.max(1, Number(draft.mensualidadesTotal) || 12);
+                          const calc = computeFinancedInstallment(totalVal, meses, tin);
+                          setDraft((p) => ({
+                            ...p,
+                            tinFinanciacionPct: e.target.value,
+                            importe: String(calc.cuotaMensual),
+                            recurrencia: 'mensual',
+                          }));
+                        }}
+                        className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 font-mono text-base tabular-nums dark:border-slate-700 dark:bg-slate-800 dark:text-white"
+                      />
+                    </label>
+
+                    <div className="flex flex-col justify-center text-sm text-slate-800 dark:text-slate-200">
+                      {(() => {
+                        const finCalc = computeFinancedInstallment(
+                          Number(draft.importeTotalFinanciado) || 0,
+                          Number(draft.mensualidadesTotal) || 12,
+                          Number(draft.tinFinanciacionPct) || 0
+                        );
+                        return (
+                          <>
+                            <span className="font-semibold">
+                              Cuota mensual: {formatEUR(finCalc.cuotaMensual)}
+                            </span>
+                            <span className="text-xs text-slate-600 dark:text-slate-400">
+                              Total a devolver: {formatEUR(finCalc.totalPagado)} (Intereses:{' '}
+                              {formatEUR(finCalc.totalIntereses)})
+                            </span>
+                          </>
+                        );
+                      })()}
+                    </div>
+                  </div>
+                )}
               </div>
             )}
 
@@ -841,6 +1019,12 @@ export const MovementsLedger: React.FC<MovementsLedgerProps> = ({
                           : m.subcategoria}
                         {m.recurrencia !== 'puntual'
                           ? ` · ${RECURRENCE_LABELS[m.recurrencia]}`
+                          : ''}
+                        {m.financiado && m.mensualidadesTotal
+                          ? ` · Financiado ${m.mensualidadesTotal} cuotas (Total ${formatEUR(
+                              m.importeTotalFinanciado ?? m.importe * m.mensualidadesTotal,
+                              false
+                            )})`
                           : ''}
                         {m.justificanteNombre && (
                           <span className="ml-2 inline-flex items-center gap-1 text-blue-700 dark:text-blue-400">

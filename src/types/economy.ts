@@ -35,6 +35,7 @@ export type MainSection =
   | 'resumen'
   | 'movimientos'
   | 'cuentas'
+  | 'comparador'
   | 'hipoteca'
   | 'irpf'
   | 'poster';
@@ -58,6 +59,9 @@ export interface HouseholdMember {
   nombre: string;
   rol: MemberRole;
   edad: number;
+  email?: string;
+  autorizadoAcceso?: boolean;
+  autorizadoVerTodo?: boolean;
   esTitularFiscal: boolean;
   limiteGastoMensual?: number; // Control parental para miembros limitados
   esNomina?: boolean;
@@ -125,8 +129,15 @@ export interface FinancialMovement {
   esHipoteca?: boolean;
   esSeguroVinculadoHipoteca?: boolean;
   esDeducibleAutonomo?: boolean;
+  financiado?: boolean;
+  importeTotalFinanciado?: number;
+  mensualidadesTotal?: number;
+  tinFinanciacionPct?: number;
+  cuotaMensualFinanciada?: number;
   observaciones?: string;
   justificanteNombre?: string;
+  gmailMessageId?: string;
+  emisor?: string;
 }
 
 export interface EconomyWorkspaceState {

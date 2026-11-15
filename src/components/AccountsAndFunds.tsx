@@ -1,9 +1,23 @@
 import React, { useState } from 'react';
-import { ArrowRightLeft, Eye, EyeOff, Plus, Shield, Trash2 } from 'lucide-react';
+import {
+  AlertTriangle,
+  ArrowRightLeft,
+  CheckCircle2,
+  Eye,
+  EyeOff,
+  Lock,
+  Plus,
+  Shield,
+  ShieldCheck,
+  Target,
+  Trash2,
+} from 'lucide-react';
 import {
   ACCOUNT_TYPE_LABELS,
+  CategoryBudgetStatus,
   EconomySummaryResult,
   SITUACION_LABORAL_LABELS,
+  authorizeFamilyMemberByEmail,
 } from '../engines/economyEngine';
 import {
   AccountType,
@@ -83,10 +97,28 @@ export const AccountsAndFunds: React.FC<AccountsAndFundsProps> = ({
   const [newCatBudget, setNewCatBudget] = useState('100');
   const [newSubNameByCat, setNewSubNameByCat] = useState<Record<string, string>>({});
 
+  // Objetivos de Presupuesto Mensual
+  const expenseCategories = state.categories.filter((c) => c.tipo === 'gasto');
+  const defaultGoalCat =
+    expenseCategories.find((c) => !c.oculta) ?? expenseCategories[0];
+  const [goalBudgetCatId, setGoalBudgetCatId] = useState<string>(
+    defaultGoalCat?.id ?? ''
+  );
+  const [goalBudgetAmount, setGoalBudgetAmount] = useState<string>(
+    String(defaultGoalCat?.presupuestoMensual ?? 0)
+  );
+  const [goalBudgetSavedNote, setGoalBudgetSavedNote] = useState<string | null>(null);
+
   // Nuevo Miembro
   const [newMemberName, setNewMemberName] = useState('');
+  const [newMemberEmail, setNewMemberEmail] = useState('');
   const [newMemberRole, setNewMemberRole] = useState<MemberRole>('adulto');
   const [newMemberAge, setNewMemberAge] = useState('35');
+
+  // Autorizaciones Unidad Familiar (solo titular en modo familiar)
+  const [authEmailInput, setAuthEmailInput] = useState('');
+  const [authGrantFullView, setAuthGrantFullView] = useState(true);
+  const [authMsg, setAuthMsg] = useState<{ type: 'ok' | 'error'; text: string } | null>(null);
 
   const visibleAccounts = summary.accountBalances.map((b) => b.account);
   const effectiveGoalAccount = state.accounts.some((a) => a.id === goalAccount)
@@ -207,6 +239,9 @@ export const AccountsAndFunds: React.FC<AccountsAndFundsProps> = ({
       nombre: newMemberName.trim(),
       rol: newMemberRole,
       edad,
+      email: newMemberEmail.trim() || undefined,
+      autorizadoAcceso: true,
+      autorizadoVerTodo: newMemberRole === 'admin',
       esTitularFiscal: newMemberRole !== 'limitado' && edad >= 18,
       limiteGastoMensual: newMemberRole === 'limitado' ? 100 : undefined,
       esNomina: newMemberRole !== 'limitado',
@@ -218,6 +253,25 @@ export const AccountsAndFunds: React.FC<AccountsAndFundsProps> = ({
     };
     onUpdateMembers([...state.members, next]);
     setNewMemberName('');
+    setNewMemberEmail('');
+  };
+
+  const handleAuthorizeMember = (e: React.FormEvent) => {
+    e.preventDefault();
+    const res = authorizeFamilyMemberByEmail(state, authEmailInput, authGrantFullView);
+    if (!res.ok || !res.updatedMembers || !res.authorizedMember) {
+      setAuthMsg({ type: 'error', text: res.error ?? 'Error al autorizar miembro.' });
+      return;
+    }
+    onUpdateMembers(res.updatedMembers);
+    setAuthMsg({
+      type: 'ok',
+      text:
+        res.authorizedMember.rol === 'adulto' && res.authorizedMember.autorizadoVerTodo
+          ? `Autorizado ${res.authorizedMember.nombre} (${res.authorizedMember.email}) para ver toda la unidad familiar.`
+          : `Autorizado acceso a ${res.authorizedMember.nombre} (${res.authorizedMember.email}).`,
+    });
+    setAuthEmailInput('');
   };
 
   const getAccountName = (id: string) =>
@@ -628,7 +682,7 @@ export const AccountsAndFunds: React.FC<AccountsAndFundsProps> = ({
               key={mem.id}
               className="rounded-xl border border-slate-200 p-4 dark:border-slate-800"
             >
-              <div className="grid grid-cols-1 gap-4 md:grid-cols-4">
+              <div className="grid grid-cols-1 gap-4 md:grid-cols-5">
                 <label className="space-y-1 text-sm font-semibold text-slate-700 dark:text-slate-300">
                   <span>Nombre</span>
                   <input
@@ -646,6 +700,23 @@ export const AccountsAndFunds: React.FC<AccountsAndFundsProps> = ({
                 </label>
 
                 <label className="space-y-1 text-sm font-semibold text-slate-700 dark:text-slate-300">
+                  <span>Correo de acceso</span>
+                  <input
+                    type="email"
+                    value={mem.email ?? ''}
+                    onChange={(e) =>
+                      onUpdateMembers(
+                        state.members.map((m) =>
+                          m.id === mem.id ? { ...m, email: e.target.value } : m
+                        )
+                      )
+                    }
+                    placeholder="miembro@gmail.com"
+                    className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm dark:border-slate-700 dark:bg-slate-800 dark:text-white"
+                  />
+                </label>
+
+                <label className="space-y-1 text-sm font-semibold text-slate-700 dark:text-slate-300">
                   <span>Rol / Permisos</span>
                   <select
                     value={mem.rol}
@@ -657,6 +728,7 @@ export const AccountsAndFunds: React.FC<AccountsAndFundsProps> = ({
                             ? {
                                 ...m,
                                 rol: nextRol,
+                                autorizadoVerTodo: nextRol === 'admin',
                                 limiteGastoMensual:
                                   nextRol === 'limitado'
                                     ? m.limiteGastoMensual ?? 100
@@ -978,7 +1050,7 @@ export const AccountsAndFunds: React.FC<AccountsAndFundsProps> = ({
 
         <form
           onSubmit={handleAddMember}
-          className="mt-5 grid grid-cols-1 gap-3 border-t border-slate-200 pt-5 md:grid-cols-5 dark:border-slate-800"
+          className="mt-5 grid grid-cols-1 gap-3 border-t border-slate-200 pt-5 md:grid-cols-6 dark:border-slate-800"
         >
           <input
             type="text"
@@ -987,6 +1059,13 @@ export const AccountsAndFunds: React.FC<AccountsAndFundsProps> = ({
             onChange={(e) => setNewMemberName(e.target.value)}
             placeholder="Añadir miembro del hogar..."
             className="rounded-lg border border-slate-300 bg-white px-3 py-2 text-base md:col-span-2 dark:border-slate-700 dark:bg-slate-800 dark:text-white"
+          />
+          <input
+            type="email"
+            value={newMemberEmail}
+            onChange={(e) => setNewMemberEmail(e.target.value)}
+            placeholder="Correo (opcional)"
+            className="rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm dark:border-slate-700 dark:bg-slate-800 dark:text-white"
           />
           <select
             value={newMemberRole}
@@ -1016,136 +1095,596 @@ export const AccountsAndFunds: React.FC<AccountsAndFundsProps> = ({
             Añadir Miembro
           </button>
         </form>
+
+        {/* Autorizaciones de miembros (exclusivo de Unidad Familiar y titular de la cuenta) */}
+        <div className="mt-5 rounded-xl border border-slate-200 bg-slate-50/70 p-4 dark:border-slate-800 dark:bg-slate-950/60">
+          <div className="flex items-center gap-2">
+            <ShieldCheck className="h-5 w-5 text-blue-700 dark:text-blue-400" />
+            <h3 className="text-base font-bold text-slate-900 dark:text-white">
+              Autorizaciones de Acceso en la Unidad Familiar
+            </h3>
+          </div>
+
+          {state.mode !== 'familiar' ? (
+            <p className="mt-2 flex items-center gap-2 text-sm text-slate-600 dark:text-slate-400">
+              <Lock className="h-4 w-4 shrink-0" />
+              Las autorizaciones solo están disponibles en la modalidad Unidad Familiar.
+            </p>
+          ) : state.members.find((m) => m.id === state.actingMemberId)?.rol !== 'admin' ? (
+            <p className="mt-2 text-sm text-amber-800 dark:text-amber-300">
+              Solo el usuario titular de la cuenta (administrador) puede autorizar o revocar permisos
+              de miembros de su unidad familiar.
+            </p>
+          ) : (
+            <div className="mt-3 space-y-3">
+              <p className="text-sm text-slate-600 dark:text-slate-400">
+                Autoriza por correo electrónico únicamente a miembros que formen parte de esta
+                unidad familiar (nunca a terceras personas externas).
+              </p>
+
+              <form
+                onSubmit={handleAuthorizeMember}
+                className="grid grid-cols-1 gap-3 md:grid-cols-12"
+              >
+                <input
+                  type="email"
+                  value={authEmailInput}
+                  onChange={(e) => setAuthEmailInput(e.target.value)}
+                  placeholder="Correo del miembro a autorizar (ej. adulto2deprueba@gmail.com)"
+                  aria-label="Correo del miembro a autorizar"
+                  className="rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm md:col-span-5 dark:border-slate-700 dark:bg-slate-800 dark:text-white"
+                />
+                <label className="flex items-center gap-2 text-sm text-slate-700 md:col-span-4 dark:text-slate-300">
+                  <input
+                    type="checkbox"
+                    checked={authGrantFullView}
+                    onChange={(e) => setAuthGrantFullView(e.target.checked)}
+                    className="h-4 w-4 rounded border-slate-300"
+                  />
+                  <span>Autorizar ver toda la unidad (adultos)</span>
+                </label>
+                <button
+                  type="submit"
+                  className="rounded-lg bg-emerald-700 px-4 py-2 text-sm font-semibold text-white hover:bg-emerald-800 md:col-span-3"
+                >
+                  Autorizar miembro
+                </button>
+              </form>
+
+              {authMsg && (
+                <div
+                  className={`rounded-lg border p-3 text-sm ${
+                    authMsg.type === 'ok'
+                      ? 'border-emerald-200 bg-emerald-50 text-emerald-900 dark:border-emerald-900/60 dark:bg-emerald-950/30 dark:text-emerald-200'
+                      : 'border-red-300 bg-red-50 text-red-900 dark:border-red-900/60 dark:bg-red-950/30 dark:text-red-200'
+                  }`}
+                >
+                  {authMsg.text}
+                </div>
+              )}
+
+              <div className="divide-y divide-slate-200 rounded-lg border border-slate-200 bg-white dark:divide-slate-800 dark:border-slate-800 dark:bg-slate-900">
+                {state.members
+                  .filter((m) => m.rol !== 'admin')
+                  .map((m) => {
+                    const accessOn = m.autorizadoAcceso !== false;
+                    const fullViewOn = m.rol === 'adulto' && Boolean(m.autorizadoVerTodo);
+                    return (
+                      <div
+                        key={m.id}
+                        className="flex flex-wrap items-center justify-between gap-3 px-4 py-2.5 text-sm"
+                      >
+                        <div>
+                          <span className="font-semibold text-slate-900 dark:text-white">
+                            {m.nombre}
+                          </span>{' '}
+                          <span className="font-mono text-xs text-slate-500">
+                            ({m.email || 'sin correo'})
+                          </span>
+                          <p className="text-xs text-slate-500 dark:text-slate-400">
+                            {!accessOn
+                              ? 'Acceso deshabilitado'
+                              : m.rol === 'adulto'
+                                ? fullViewOn
+                                  ? 'Autorizado a ver TODA la unidad familiar'
+                                  : 'Solo ve datos propios y compartidos (sin autorización total)'
+                                : 'Autorizado a ver sus propios datos'}
+                          </p>
+                        </div>
+
+                        <div className="flex flex-wrap items-center gap-2">
+                          <button
+                            type="button"
+                            onClick={() =>
+                              onUpdateMembers(
+                                state.members.map((item) =>
+                                  item.id === m.id
+                                    ? {
+                                        ...item,
+                                        autorizadoAcceso: item.autorizadoAcceso === false,
+                                        autorizadoVerTodo:
+                                          item.autorizadoAcceso === false
+                                            ? item.autorizadoVerTodo
+                                            : false,
+                                      }
+                                    : item
+                                )
+                              )
+                            }
+                            className="rounded-lg border border-slate-300 px-2.5 py-1 text-xs font-semibold text-slate-700 hover:bg-slate-50 dark:border-slate-700 dark:text-slate-200"
+                          >
+                            {accessOn ? 'Revocar acceso' : 'Autorizar acceso'}
+                          </button>
+
+                          {m.rol === 'adulto' && (
+                            <button
+                              type="button"
+                              onClick={() =>
+                                onUpdateMembers(
+                                  state.members.map((item) =>
+                                    item.id === m.id
+                                      ? {
+                                          ...item,
+                                          autorizadoAcceso: true,
+                                          autorizadoVerTodo: !item.autorizadoVerTodo,
+                                        }
+                                      : item
+                                  )
+                                )
+                              }
+                              className={`rounded-lg px-2.5 py-1 text-xs font-semibold ${
+                                fullViewOn
+                                  ? 'border border-amber-300 bg-amber-50 text-amber-900 dark:border-amber-800 dark:bg-amber-950/30 dark:text-amber-200'
+                                  : 'bg-blue-700 text-white hover:bg-blue-800'
+                              }`}
+                            >
+                              {fullViewOn ? 'Revocar ver todo' : 'Autorizar ver todo'}
+                            </button>
+                          )}
+                        </div>
+                      </div>
+                    );
+                  })}
+              </div>
+            </div>
+          )}
+        </div>
       </section>
 
-      {/* Bloque 4: Catálogo COICOP Configurable y Presupuestos Mensuales */}
-      <section className="rounded-xl border border-slate-200 bg-white p-6 dark:border-slate-800 dark:bg-slate-900">
-        <h2 className="text-xl font-bold text-slate-900 dark:text-white">
-          Catálogo COICOP Configurable y Presupuestos Mensuales
-        </h2>
-        <p className="mt-1 text-base text-slate-600 dark:text-slate-400">
-          Ajusta el presupuesto mensual de cada categoría, oculta las que no utilices o añade
-          subcategorías personalizadas sin sesgos.
-        </p>
+      {/* Bloque 4: Objetivos de Presupuesto Mensual y Catálogo COICOP */}
+      {(() => {
+        const monthlyGoalByCatId = new Map<string, CategoryBudgetStatus>(
+          summary.monthlyBudgetGoals.map((g) => [g.category.id, g])
+        );
+        const visibleGoals = summary.monthlyBudgetGoals;
+        const budgetedGoals = visibleGoals.filter((g) => g.presupuestado > 0);
+        const totalPresupuestoMensual = budgetedGoals.reduce(
+          (acc, g) => acc + g.presupuestado,
+          0
+        );
+        const totalGastadoConLimite = budgetedGoals.reduce(
+          (acc, g) => acc + g.gastado,
+          0
+        );
+        const totalGastadoMesVisible = visibleGoals.reduce(
+          (acc, g) => acc + g.gastado,
+          0
+        );
+        const margenGlobalRestante = totalPresupuestoMensual - totalGastadoConLimite;
+        const pctGlobalUso =
+          totalPresupuestoMensual > 0
+            ? (totalGastadoConLimite / totalPresupuestoMensual) * 100
+            : 0;
+        const categoriasCercaLimite = budgetedGoals.filter(
+          (g) => g.pctUso >= 80 && g.pctUso < 100 && g.superado === 0
+        ).length;
+        const categoriasSuperadas = budgetedGoals.filter(
+          (g) => g.pctUso >= 100 || g.superado > 0
+        ).length;
+        const categoriasEnObjetivo = budgetedGoals.filter(
+          (g) => g.pctUso < 80 && g.superado === 0
+        ).length;
 
-        <div className="mt-4 divide-y divide-slate-200 dark:divide-slate-800">
-          {state.categories
-            .filter((c) => c.tipo === 'gasto')
-            .map((cat) => (
-              <div
-                key={cat.id}
-                className="flex flex-wrap items-center justify-between gap-4 py-3.5"
-              >
-                <div className="min-w-[260px] flex-1">
-                  <div className="flex items-center gap-2.5">
-                    <span className="font-mono text-xs text-slate-400">{cat.coicopCode}</span>
-                    <span
-                      className={`text-base font-semibold ${
-                        cat.oculta
-                          ? 'text-slate-400 line-through'
-                          : 'text-slate-900 dark:text-white'
-                      }`}
-                    >
-                      {cat.nombre}
-                    </span>
-                  </div>
-                  <p className="mt-1 text-sm text-slate-500 dark:text-slate-400">
-                    Subcategorías: {cat.subcategorias.join(' · ')}
-                  </p>
+        const effectiveGoalCatId = expenseCategories.some((c) => c.id === goalBudgetCatId)
+          ? goalBudgetCatId
+          : (defaultGoalCat?.id ?? '');
+
+        const handleSaveMonthlyGoal = (e: React.FormEvent) => {
+          e.preventDefault();
+          if (!effectiveGoalCatId) return;
+          const nextLimit = Math.max(0, Number(goalBudgetAmount) || 0);
+          const targetCat = expenseCategories.find((c) => c.id === effectiveGoalCatId);
+          onUpdateCategories(
+            state.categories.map((c) =>
+              c.id === effectiveGoalCatId
+                ? { ...c, presupuestoMensual: nextLimit }
+                : c
+            )
+          );
+          setGoalBudgetSavedNote(
+            `Objetivo actualizado para ${targetCat?.nombre ?? 'la categoría'}: ${formatEUR(nextLimit)} / mes.`
+          );
+        };
+
+        return (
+          <section className="rounded-xl border border-slate-200 bg-white p-6 dark:border-slate-800 dark:bg-slate-900">
+            <div className="flex flex-wrap items-start justify-between gap-4">
+              <div>
+                <div className="flex items-center gap-2">
+                  <Target className="h-5 w-5 text-blue-700 dark:text-blue-400" />
+                  <h2 className="text-xl font-bold text-slate-900 dark:text-white">
+                    Objetivos de Presupuesto Mensual y Catálogo COICOP
+                  </h2>
                 </div>
+                <p className="mt-1 text-base text-slate-600 dark:text-slate-400">
+                  Fija límites de gasto mensual por categoría y supervisa en tiempo real qué tan
+                  cerca estás de alcanzarlos durante el mes en curso.
+                </p>
+              </div>
+              <div className="text-right font-mono text-sm tabular-nums text-slate-500 dark:text-slate-400">
+                {budgetedGoals.length} de {visibleGoals.length} categorías con límite activo
+              </div>
+            </div>
 
-                <div className="flex flex-wrap items-center gap-3">
-                  <div className="flex items-center gap-1.5">
-                    <input
-                      type="text"
-                      value={newSubNameByCat[cat.id] ?? ''}
-                      onChange={(e) =>
-                        setNewSubNameByCat((prev) => ({
-                          ...prev,
-                          [cat.id]: e.target.value,
-                        }))
-                      }
-                      placeholder="Nueva subcategoría..."
-                      className="w-40 rounded-lg border border-slate-300 bg-white px-2.5 py-1.5 text-sm dark:border-slate-700 dark:bg-slate-800 dark:text-white"
-                    />
-                    <button
-                      type="button"
-                      onClick={() => handleAddSubcategory(cat.id)}
-                      className="rounded-lg border border-slate-300 px-2.5 py-1.5 text-sm font-medium text-slate-700 hover:bg-slate-50 dark:border-slate-700 dark:text-slate-200 dark:hover:bg-slate-800"
-                    >
-                      + Sub
-                    </button>
+            {/* Resumen global de objetivos mensuales */}
+            <div className="mt-5 grid grid-cols-1 gap-4 rounded-xl border border-slate-200 bg-slate-50 p-4 md:grid-cols-4 dark:border-slate-800 dark:bg-slate-800/50">
+              <div>
+                <p className="text-xs font-semibold uppercase tracking-wider text-slate-500 dark:text-slate-400">
+                  Límite Mensual Global
+                </p>
+                <p className="mt-1 font-mono text-xl font-bold tabular-nums text-slate-900 dark:text-white">
+                  {formatEUR(totalPresupuestoMensual)}
+                </p>
+                <p className="mt-0.5 text-xs text-slate-500 dark:text-slate-400">
+                  Suma de límites visibles
+                </p>
+              </div>
+
+              <div>
+                <p className="text-xs font-semibold uppercase tracking-wider text-slate-500 dark:text-slate-400">
+                  Gastado Este Mes
+                </p>
+                <p className="mt-1 font-mono text-xl font-bold tabular-nums text-slate-900 dark:text-white">
+                  {formatEUR(totalGastadoMesVisible)}
+                </p>
+                <p className="mt-0.5 font-mono text-xs tabular-nums text-slate-500 dark:text-slate-400">
+                  En categorías con límite: {formatEUR(totalGastadoConLimite)}
+                </p>
+              </div>
+
+              <div>
+                <p className="text-xs font-semibold uppercase tracking-wider text-slate-500 dark:text-slate-400">
+                  {margenGlobalRestante >= 0 ? 'Margen Disponible' : 'Exceso Sobre Límite'}
+                </p>
+                <p
+                  className={`mt-1 font-mono text-xl font-bold tabular-nums ${
+                    margenGlobalRestante >= 0
+                      ? 'text-emerald-700 dark:text-emerald-400'
+                      : 'text-red-700 dark:text-red-400'
+                  }`}
+                >
+                  {margenGlobalRestante >= 0
+                    ? formatEUR(margenGlobalRestante)
+                    : `+${formatEUR(Math.abs(margenGlobalRestante))}`}
+                </p>
+                <p className="mt-0.5 font-mono text-xs tabular-nums text-slate-500 dark:text-slate-400">
+                  {pctGlobalUso.toFixed(1)} % del presupuesto global
+                </p>
+              </div>
+
+              <div>
+                <p className="text-xs font-semibold uppercase tracking-wider text-slate-500 dark:text-slate-400">
+                  Estado de Objetivos
+                </p>
+                <div className="mt-1.5 space-y-1 text-xs font-medium">
+                  <div className="flex items-center justify-between text-emerald-700 dark:text-emerald-400">
+                    <span>En objetivo (&lt; 80 %)</span>
+                    <span className="font-mono tabular-nums">{categoriasEnObjetivo}</span>
                   </div>
-
-                  <label className="flex items-center gap-2 text-sm text-slate-600 dark:text-slate-400">
-                    <span>Límite/mes (€):</span>
-                    <input
-                      type="number"
-                      min="0"
-                      step="10"
-                      value={cat.presupuestoMensual}
-                      onChange={(e) =>
-                        onUpdateCategories(
-                          state.categories.map((c) =>
-                            c.id === cat.id
-                              ? { ...c, presupuestoMensual: Math.max(0, Number(e.target.value) || 0) }
-                              : c
-                          )
-                        )
-                      }
-                      className="w-28 rounded-lg border border-slate-300 bg-white px-2.5 py-1.5 text-right font-mono text-base tabular-nums dark:border-slate-700 dark:bg-slate-800 dark:text-white"
-                    />
-                  </label>
-
-                  <button
-                    type="button"
-                    onClick={() =>
-                      onUpdateCategories(
-                        state.categories.map((c) =>
-                          c.id === cat.id ? { ...c, oculta: !c.oculta } : c
-                        )
-                      )
-                    }
-                    className="inline-flex items-center gap-1.5 rounded-lg border border-slate-300 px-3 py-1.5 text-sm font-medium text-slate-700 hover:bg-slate-50 dark:border-slate-700 dark:text-slate-300 dark:hover:bg-slate-800"
-                  >
-                    {cat.oculta ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
-                    {cat.oculta ? 'Oculta' : 'Visible'}
-                  </button>
+                  <div className="flex items-center justify-between text-amber-700 dark:text-amber-400">
+                    <span>Cerca del límite (80–99 %)</span>
+                    <span className="font-mono tabular-nums">{categoriasCercaLimite}</span>
+                  </div>
+                  <div className="flex items-center justify-between text-red-700 dark:text-red-400">
+                    <span>Límite superado (≥ 100 %)</span>
+                    <span className="font-mono tabular-nums">{categoriasSuperadas}</span>
+                  </div>
                 </div>
               </div>
-            ))}
-        </div>
 
-        <form
-          onSubmit={handleAddCategory}
-          className="mt-5 grid grid-cols-1 gap-3 border-t border-slate-200 pt-5 md:grid-cols-4 dark:border-slate-800"
-        >
-          <input
-            type="text"
-            required
-            value={newCatName}
-            onChange={(e) => setNewCatName(e.target.value)}
-            placeholder="Nueva categoría personalizada..."
-            className="rounded-lg border border-slate-300 bg-white px-3 py-2 text-base md:col-span-2 dark:border-slate-700 dark:bg-slate-800 dark:text-white"
-          />
-          <input
-            type="number"
-            min="0"
-            step="10"
-            value={newCatBudget}
-            onChange={(e) => setNewCatBudget(e.target.value)}
-            placeholder="Presupuesto €/mes"
-            className="rounded-lg border border-slate-300 bg-white px-3 py-2 font-mono text-base tabular-nums dark:border-slate-700 dark:bg-slate-800 dark:text-white"
-          />
-          <button
-            type="submit"
-            className="inline-flex items-center justify-center gap-2 rounded-lg bg-blue-700 px-4 py-2 text-sm font-semibold text-white hover:bg-blue-800"
-          >
-            <Plus className="h-4 w-4" />
-            Añadir Categoría
-          </button>
-        </form>
-      </section>
+              <div className="md:col-span-4">
+                <div className="mb-1.5 flex items-center justify-between text-xs font-medium text-slate-600 dark:text-slate-300">
+                  <span>Progreso mensual agregado (categorías con límite)</span>
+                  <span className="font-mono tabular-nums">
+                    {formatEUR(totalGastadoConLimite)} / {formatEUR(totalPresupuestoMensual)} (
+                    {pctGlobalUso.toFixed(1)} %)
+                  </span>
+                </div>
+                <div className="h-2.5 w-full overflow-hidden rounded-full bg-slate-200 dark:bg-slate-700">
+                  <div
+                    className={`h-full rounded-full transition-all duration-300 ${
+                      pctGlobalUso >= 100
+                        ? 'bg-red-600'
+                        : pctGlobalUso >= 80
+                          ? 'bg-amber-500'
+                          : 'bg-emerald-600'
+                    }`}
+                    style={{ width: `${Math.min(100, Math.max(0, pctGlobalUso))}%` }}
+                  />
+                </div>
+              </div>
+            </div>
+
+            {/* Formulario rápido para fijar límite mensual por categoría */}
+            <form
+              onSubmit={handleSaveMonthlyGoal}
+              className="mt-4 grid grid-cols-1 items-end gap-3 rounded-xl border border-slate-200 p-4 md:grid-cols-4 dark:border-slate-800"
+            >
+              <label className="block md:col-span-2">
+                <span className="text-xs font-semibold uppercase tracking-wider text-slate-600 dark:text-slate-400">
+                  Categoría de gasto
+                </span>
+                <select
+                  value={effectiveGoalCatId}
+                  onChange={(e) => {
+                    const nextId = e.target.value;
+                    setGoalBudgetCatId(nextId);
+                    const found = expenseCategories.find((c) => c.id === nextId);
+                    setGoalBudgetAmount(String(found?.presupuestoMensual ?? 0));
+                    setGoalBudgetSavedNote(null);
+                  }}
+                  className="mt-1 w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm font-medium text-slate-900 dark:border-slate-700 dark:bg-slate-800 dark:text-white"
+                >
+                  {expenseCategories.map((c) => (
+                    <option key={c.id} value={c.id}>
+                      {c.coicopCode} · {c.nombre}
+                      {c.oculta ? ' (Oculta)' : ''}
+                    </option>
+                  ))}
+                </select>
+              </label>
+
+              <label className="block">
+                <span className="text-xs font-semibold uppercase tracking-wider text-slate-600 dark:text-slate-400">
+                  Límite mensual (€)
+                </span>
+                <input
+                  type="number"
+                  min="0"
+                  step="10"
+                  value={goalBudgetAmount}
+                  onChange={(e) => {
+                    setGoalBudgetAmount(e.target.value);
+                    setGoalBudgetSavedNote(null);
+                  }}
+                  className="mt-1 w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-right font-mono text-base tabular-nums text-slate-900 dark:border-slate-700 dark:bg-slate-800 dark:text-white"
+                />
+              </label>
+
+              <button
+                type="submit"
+                className="inline-flex items-center justify-center gap-2 rounded-lg bg-blue-700 px-4 py-2.5 text-sm font-semibold text-white hover:bg-blue-800"
+              >
+                <Target className="h-4 w-4" />
+                Guardar Objetivo
+              </button>
+
+              {goalBudgetSavedNote && (
+                <p className="flex items-center gap-1.5 text-sm font-medium text-emerald-700 md:col-span-4 dark:text-emerald-400">
+                  <CheckCircle2 className="h-4 w-4 shrink-0" />
+                  {goalBudgetSavedNote}
+                </p>
+              )}
+            </form>
+
+            {/* Listado por categoría con barras visuales de progreso */}
+            <div className="mt-5 divide-y divide-slate-200 dark:divide-slate-800">
+              {expenseCategories.map((cat) => {
+                const goal = monthlyGoalByCatId.get(cat.id);
+                const gastado = goal?.gastado ?? 0;
+                const presupuestado = cat.presupuestoMensual;
+                const pctUso =
+                  presupuestado > 0 ? (gastado / presupuestado) * 100 : 0;
+                const disponible = Math.max(0, presupuestado - gastado);
+                const superado = Math.max(0, gastado - presupuestado);
+                const isOver = presupuestado > 0 && (pctUso >= 100 || superado > 0);
+                const isWarning = presupuestado > 0 && !isOver && pctUso >= 80;
+
+                const barColorClass =
+                  presupuestado <= 0
+                    ? 'bg-slate-300 dark:bg-slate-600'
+                    : isOver
+                      ? 'bg-red-600'
+                      : isWarning
+                        ? 'bg-amber-500'
+                        : 'bg-emerald-600';
+
+                return (
+                  <div key={cat.id} className="space-y-3 py-4">
+                    <div className="flex flex-wrap items-center justify-between gap-4">
+                      <div className="min-w-[260px] flex-1">
+                        <div className="flex items-center gap-2.5">
+                          <span className="font-mono text-xs text-slate-400">{cat.coicopCode}</span>
+                          <span
+                            className={`text-base font-semibold ${
+                              cat.oculta
+                                ? 'text-slate-400 line-through'
+                                : 'text-slate-900 dark:text-white'
+                            }`}
+                          >
+                            {cat.nombre}
+                          </span>
+                        </div>
+                        <p className="mt-1 text-sm text-slate-500 dark:text-slate-400">
+                          Subcategorías: {cat.subcategorias.join(' · ')}
+                        </p>
+                      </div>
+
+                      <div className="flex flex-wrap items-center gap-3">
+                        <div className="flex items-center gap-1.5">
+                          <input
+                            type="text"
+                            value={newSubNameByCat[cat.id] ?? ''}
+                            onChange={(e) =>
+                              setNewSubNameByCat((prev) => ({
+                                ...prev,
+                                [cat.id]: e.target.value,
+                              }))
+                            }
+                            placeholder="Nueva subcategoría..."
+                            className="w-40 rounded-lg border border-slate-300 bg-white px-2.5 py-1.5 text-sm dark:border-slate-700 dark:bg-slate-800 dark:text-white"
+                          />
+                          <button
+                            type="button"
+                            onClick={() => handleAddSubcategory(cat.id)}
+                            className="rounded-lg border border-slate-300 px-2.5 py-1.5 text-sm font-medium text-slate-700 hover:bg-slate-50 dark:border-slate-700 dark:text-slate-200 dark:hover:bg-slate-800"
+                          >
+                            + Sub
+                          </button>
+                        </div>
+
+                        <label className="flex items-center gap-2 text-sm text-slate-600 dark:text-slate-400">
+                          <span>Límite/mes (€):</span>
+                          <input
+                            type="number"
+                            min="0"
+                            step="10"
+                            value={cat.presupuestoMensual}
+                            onChange={(e) => {
+                              const nextVal = Math.max(0, Number(e.target.value) || 0);
+                              onUpdateCategories(
+                                state.categories.map((c) =>
+                                  c.id === cat.id
+                                    ? { ...c, presupuestoMensual: nextVal }
+                                    : c
+                                )
+                              );
+                              if (cat.id === effectiveGoalCatId) {
+                                setGoalBudgetAmount(String(nextVal));
+                              }
+                            }}
+                            className="w-28 rounded-lg border border-slate-300 bg-white px-2.5 py-1.5 text-right font-mono text-base tabular-nums dark:border-slate-700 dark:bg-slate-800 dark:text-white"
+                          />
+                        </label>
+
+                        <button
+                          type="button"
+                          onClick={() =>
+                            onUpdateCategories(
+                              state.categories.map((c) =>
+                                c.id === cat.id ? { ...c, oculta: !c.oculta } : c
+                              )
+                            )
+                          }
+                          className="inline-flex items-center gap-1.5 rounded-lg border border-slate-300 px-3 py-1.5 text-sm font-medium text-slate-700 hover:bg-slate-50 dark:border-slate-700 dark:text-slate-300 dark:hover:bg-slate-800"
+                        >
+                          {cat.oculta ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+                          {cat.oculta ? 'Oculta' : 'Visible'}
+                        </button>
+                      </div>
+                    </div>
+
+                    {!cat.oculta && (
+                      <div className="rounded-lg bg-slate-50 px-3.5 py-2.5 dark:bg-slate-800/40">
+                        <div className="mb-1.5 flex flex-wrap items-center justify-between gap-2 text-xs">
+                          <div className="flex items-center gap-1.5 font-medium">
+                            {presupuestado <= 0 ? (
+                              <span className="text-slate-500 dark:text-slate-400">
+                                Sin límite mensual fijado
+                              </span>
+                            ) : isOver ? (
+                              <span className="inline-flex items-center gap-1 text-red-700 dark:text-red-400">
+                                <AlertTriangle className="h-3.5 w-3.5" />
+                                Límite superado (+{formatEUR(superado)})
+                              </span>
+                            ) : isWarning ? (
+                              <span className="inline-flex items-center gap-1 text-amber-700 dark:text-amber-400">
+                                <AlertTriangle className="h-3.5 w-3.5" />
+                                Cerca del límite · Disponible: {formatEUR(disponible)}
+                              </span>
+                            ) : (
+                              <span className="inline-flex items-center gap-1 text-emerald-700 dark:text-emerald-400">
+                                <CheckCircle2 className="h-3.5 w-3.5" />
+                                Dentro de objetivo · Disponible: {formatEUR(disponible)}
+                              </span>
+                            )}
+                          </div>
+
+                          <div className="flex items-center gap-3 font-mono tabular-nums text-slate-700 dark:text-slate-300">
+                            <span>
+                              {formatEUR(gastado)} /{' '}
+                              {presupuestado > 0 ? formatEUR(presupuestado) : 'Sin límite'}
+                            </span>
+                            {presupuestado > 0 && (
+                              <span
+                                className={`font-semibold ${
+                                  isOver
+                                    ? 'text-red-700 dark:text-red-400'
+                                    : isWarning
+                                      ? 'text-amber-700 dark:text-amber-400'
+                                      : 'text-emerald-700 dark:text-emerald-400'
+                                }`}
+                              >
+                                {pctUso.toFixed(0)} %
+                              </span>
+                            )}
+                          </div>
+                        </div>
+
+                        <div
+                          className="h-2.5 w-full overflow-hidden rounded-full bg-slate-200 dark:bg-slate-700"
+                          role="progressbar"
+                          aria-label={`Progreso de presupuesto mensual para ${cat.nombre}`}
+                          aria-valuenow={Math.round(Math.min(100, Math.max(0, pctUso)))}
+                          aria-valuemin={0}
+                          aria-valuemax={100}
+                        >
+                          <div
+                            className={`h-full rounded-full transition-all duration-300 ${barColorClass}`}
+                            style={{
+                              width: `${presupuestado > 0 ? Math.min(100, Math.max(0, pctUso)) : 0}%`,
+                            }}
+                          />
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+
+            <form
+              onSubmit={handleAddCategory}
+              className="mt-5 grid grid-cols-1 gap-3 border-t border-slate-200 pt-5 md:grid-cols-4 dark:border-slate-800"
+            >
+              <input
+                type="text"
+                required
+                value={newCatName}
+                onChange={(e) => setNewCatName(e.target.value)}
+                placeholder="Nueva categoría personalizada..."
+                className="rounded-lg border border-slate-300 bg-white px-3 py-2 text-base md:col-span-2 dark:border-slate-700 dark:bg-slate-800 dark:text-white"
+              />
+              <input
+                type="number"
+                min="0"
+                step="10"
+                value={newCatBudget}
+                onChange={(e) => setNewCatBudget(e.target.value)}
+                placeholder="Presupuesto €/mes"
+                className="rounded-lg border border-slate-300 bg-white px-3 py-2 font-mono text-base tabular-nums dark:border-slate-700 dark:bg-slate-800 dark:text-white"
+              />
+              <button
+                type="submit"
+                className="inline-flex items-center justify-center gap-2 rounded-lg bg-blue-700 px-4 py-2 text-sm font-semibold text-white hover:bg-blue-800"
+              >
+                <Plus className="h-4 w-4" />
+                Añadir Categoría
+              </button>
+            </form>
+          </section>
+        );
+      })()}
     </div>
   );
 };

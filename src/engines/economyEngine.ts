@@ -1,6 +1,7 @@
 import {
   AccountType,
   CategoryConfig,
+  EconomyMode,
   EconomyWorkspaceState,
   FinancialAccount,
   FinancialMovement,
@@ -88,25 +89,114 @@ export function resolvePeriodRange(
 
 export function canMemberViewMovement(
   actingMember: HouseholdMember | undefined,
-  movement: FinancialMovement
+  movement: FinancialMovement,
+  mode: EconomyMode = 'familiar'
 ): boolean {
   if (!actingMember || actingMember.rol === 'admin') return true;
-  if (movement.miembroId === actingMember.id) return true;
-  if (actingMember.rol === 'adulto') return movement.visibilidad === 'compartida';
+  if (actingMember.autorizadoAcceso === false) return false;
+  if (actingMember.rol === 'adulto') {
+    if (mode === 'familiar' && actingMember.autorizadoVerTodo === true) return true;
+    return movement.miembroId === actingMember.id || movement.visibilidad === 'compartida';
+  }
   // Rol limitado (menor): solo ve sus propios movimientos
-  return false;
+  return movement.miembroId === actingMember.id;
 }
 
 export function canMemberViewAccount(
   actingMember: HouseholdMember | undefined,
-  account: FinancialAccount
+  account: FinancialAccount,
+  mode: EconomyMode = 'familiar'
 ): boolean {
   if (!actingMember || actingMember.rol === 'admin') return true;
-  if (account.titularId === actingMember.id) return true;
+  if (actingMember.autorizadoAcceso === false) return false;
   if (actingMember.rol === 'adulto') {
-    return account.titularId === 'familiar' || account.visibilidad === 'compartida';
+    if (mode === 'familiar' && actingMember.autorizadoVerTodo === true) return true;
+    return (
+      account.titularId === actingMember.id ||
+      account.titularId === 'familiar' ||
+      account.visibilidad === 'compartida'
+    );
   }
-  return false;
+  // Rol limitado (menor): solo ve sus propias cuentas
+  return account.titularId === actingMember.id;
+}
+
+export interface FamilyAuthorizationResult {
+  ok: boolean;
+  error?: string;
+  updatedMembers?: HouseholdMember[];
+  authorizedMember?: HouseholdMember;
+}
+
+/**
+ * Regla estricta: las autorizaciones SOLO están disponibles en modalidad 'familiar'
+ * y ÚNICAMENTE para miembros existentes de la unidad familiar (nunca terceras personas).
+ */
+export function authorizeFamilyMemberByEmail(
+  state: EconomyWorkspaceState,
+  rawEmail: string,
+  grantFullView: boolean
+): FamilyAuthorizationResult {
+  if (state.mode !== 'familiar') {
+    return {
+      ok: false,
+      error:
+        'Las autorizaciones solo están disponibles en la modalidad Unidad Familiar.',
+    };
+  }
+
+  const actingMember = state.members.find((m) => m.id === state.actingMemberId);
+  if (actingMember && actingMember.rol !== 'admin') {
+    return {
+      ok: false,
+      error:
+        'Solo el usuario titular de la cuenta (administrador) puede gestionar autorizaciones.',
+    };
+  }
+
+  const normalized = rawEmail.trim().toLowerCase();
+  if (!normalized || !normalized.includes('@')) {
+    return {
+      ok: false,
+      error: 'Introduce un correo electrónico válido de un miembro de la unidad familiar.',
+    };
+  }
+
+  const target = state.members.find(
+    (m) => (m.email ?? '').trim().toLowerCase() === normalized
+  );
+
+  if (!target) {
+    return {
+      ok: false,
+      error: `Bloqueado: "${rawEmail.trim()}" no forma parte de esta unidad familiar. Nunca se puede autorizar a una tercera persona externa.`,
+    };
+  }
+
+  if (target.rol === 'admin') {
+    return {
+      ok: false,
+      error: `${target.nombre} es el usuario titular de la cuenta y ya dispone de acceso total.`,
+    };
+  }
+
+  const nextFullView = target.rol === 'adulto' ? grantFullView : false;
+  const updatedMembers = state.members.map((m) =>
+    m.id === target.id
+      ? {
+          ...m,
+          autorizadoAcceso: true,
+          autorizadoVerTodo: nextFullView,
+        }
+      : m
+  );
+
+  const authorizedMember = updatedMembers.find((m) => m.id === target.id);
+  return {
+    ok: true,
+    updatedMembers,
+    authorizedMember,
+  };
 }
 
 export interface ComputedAccountBalance {
@@ -160,6 +250,29 @@ export interface CategoryBudgetStatus {
   pctUso: number;
 }
 
+export type SavingsHealthLevel =
+  | 'saludable'
+  | 'moderada'
+  | 'ajustada'
+  | 'deficit'
+  | 'sin_datos';
+
+export interface ProjectedAnnualSavings {
+  tasaAhorroAnualPct: number;
+  ahorroAnualProyectado: number;
+  ingresosAnualesProyectados: number;
+  gastosAnualesProyectados: number;
+  ahorroMensualMedio: number;
+  ingresosMensualesMedios: number;
+  gastosMensualesMedios: number;
+  mesesAnalizados: number;
+  primerMesYYYYMM: string | null;
+  ultimoMesYYYYMM: string | null;
+  hasData: boolean;
+  hasIncome: boolean;
+  nivelSalud: SavingsHealthLevel;
+}
+
 export interface EconomySummaryResult {
   periodRange: PeriodRange;
   ingresosPeriodo: number;
@@ -176,8 +289,10 @@ export interface EconomySummaryResult {
     deltaAhorro: number;
     deltaGastosPct: number;
   };
+  projectedAnnualSavings: ProjectedAnnualSavings;
   accountBalances: ComputedAccountBalance[];
   categoryBudgets: CategoryBudgetStatus[];
+  monthlyBudgetGoals: CategoryBudgetStatus[];
   upcomingMovements: FinancialMovement[];
   visibleMovementsInPeriod: FinancialMovement[];
   capacidadAhorroPreHipotecaMensual: number;
@@ -217,14 +332,16 @@ export function computeEconomySummary(
   const prevMonthRange = resolvePeriodRange('mes_anterior');
 
   const actingMember = state.members.find((m) => m.id === state.actingMemberId);
+  const effectiveScope =
+    actingMember?.rol === 'limitado' ? actingMember.id : state.activeMemberScope;
 
   const visibleAccounts = state.accounts.filter(
     (a) =>
       a.activa &&
-      canMemberViewAccount(actingMember, a) &&
-      (state.activeMemberScope === 'todos' ||
-        a.titularId === state.activeMemberScope ||
-        a.titularId === 'familiar')
+      canMemberViewAccount(actingMember, a, state.mode) &&
+      (effectiveScope === 'todos' ||
+        a.titularId === effectiveScope ||
+        (actingMember?.rol !== 'limitado' && a.titularId === 'familiar'))
   );
 
   const allAccountBalances = computeAccountBalances(visibleAccounts, state.movements);
@@ -238,8 +355,8 @@ export function computeEconomySummary(
   const dineroRealmenteDisponible = totalEnCuentas - totalReservadoFondos;
 
   const visibleMovements = state.movements.filter((m) => {
-    if (!canMemberViewMovement(actingMember, m)) return false;
-    if (state.activeMemberScope !== 'todos' && m.miembroId !== state.activeMemberScope) {
+    if (!canMemberViewMovement(actingMember, m, state.mode)) return false;
+    if (effectiveScope !== 'todos' && m.miembroId !== effectiveScope) {
       return false;
     }
     return true;
@@ -286,12 +403,13 @@ export function computeEconomySummary(
 
   const ahorroNetoPeriodo = ingresosPeriodo - gastosPeriodo;
 
-  // Comparación Mes Actual vs Mes Anterior
+  // Comparación Mes Actual vs Mes Anterior + Gasto del mes actual por categoría
   let ingCurr = 0;
   let gasCurr = 0;
   let ingPrev = 0;
   let gasPrev = 0;
   let gasCurrPreHipoteca = 0;
+  const currentMonthSpentByCategory = new Map<string, number>();
 
   for (const m of visibleMovements) {
     if (m.tipo === 'transferencia') continue;
@@ -300,9 +418,17 @@ export function computeEconomySummary(
       else if (m.tipo === 'gasto') {
         gasCurr += m.importe;
         if (!m.esHipoteca) gasCurrPreHipoteca += m.importe;
+        currentMonthSpentByCategory.set(
+          m.categoriaId,
+          (currentMonthSpentByCategory.get(m.categoriaId) ?? 0) + m.importe
+        );
       } else if (m.tipo === 'devolucion') {
         gasCurr = Math.max(0, gasCurr - m.importe);
         gasCurrPreHipoteca = Math.max(0, gasCurrPreHipoteca - m.importe);
+        currentMonthSpentByCategory.set(
+          m.categoriaId,
+          Math.max(0, (currentMonthSpentByCategory.get(m.categoriaId) ?? 0) - m.importe)
+        );
       }
     } else if (inRange(m.fecha, prevMonthRange)) {
       if (m.tipo === 'ingreso') ingPrev += m.importe;
@@ -316,23 +442,27 @@ export function computeEconomySummary(
   const deltaAhorro = ahorroCurr - ahorroPrev;
   const deltaGastosPct = gasPrev > 0 ? ((gasCurr - gasPrev) / gasPrev) * 100 : 0;
 
-  const categoryBudgets: CategoryBudgetStatus[] = state.categories
-    .filter((c) => !c.oculta && c.tipo === 'gasto')
-    .map((category) => {
-      const gastado = spentByCategory.get(category.id) ?? 0;
-      const presupuestado = category.presupuestoMensual;
-      const disponible = Math.max(0, presupuestado - gastado);
-      const superado = Math.max(0, gastado - presupuestado);
-      const pctUso = presupuestado > 0 ? (gastado / presupuestado) * 100 : gastado > 0 ? 100 : 0;
-      return {
-        category,
-        gastado,
-        presupuestado,
-        disponible,
-        superado,
-        pctUso,
-      };
-    });
+  const buildBudgetStatuses = (spentMap: Map<string, number>): CategoryBudgetStatus[] =>
+    state.categories
+      .filter((c) => !c.oculta && c.tipo === 'gasto')
+      .map((category) => {
+        const gastado = spentMap.get(category.id) ?? 0;
+        const presupuestado = category.presupuestoMensual;
+        const disponible = Math.max(0, presupuestado - gastado);
+        const superado = Math.max(0, gastado - presupuestado);
+        const pctUso = presupuestado > 0 ? (gastado / presupuestado) * 100 : gastado > 0 ? 100 : 0;
+        return {
+          category,
+          gastado,
+          presupuestado,
+          disponible,
+          superado,
+          pctUso,
+        };
+      });
+
+  const categoryBudgets = buildBudgetStatuses(spentByCategory);
+  const monthlyBudgetGoals = buildBudgetStatuses(currentMonthSpentByCategory);
 
   const upcomingMovements = visibleMovements
     .filter((m) => m.estado === 'pendiente' || m.estado === 'proximo')
@@ -392,6 +522,91 @@ export function computeEconomySummary(
     };
   }
 
+  // Proyección anual de tasa de ahorro basada en el historial de movimientos (hasta los últimos 12 meses registrados)
+  const monthlyHistoryTotals = new Map<
+    string,
+    { ingresos: number; gastosBrutos: number; devoluciones: number }
+  >();
+  for (const m of visibleMovements) {
+    if (m.tipo === 'transferencia') continue;
+    const monthKey = m.fecha.slice(0, 7);
+    if (!/^\d{4}-\d{2}$/.test(monthKey)) continue;
+    const bucket = monthlyHistoryTotals.get(monthKey) ?? {
+      ingresos: 0,
+      gastosBrutos: 0,
+      devoluciones: 0,
+    };
+    if (m.tipo === 'ingreso') {
+      bucket.ingresos += m.importe;
+    } else if (m.tipo === 'gasto') {
+      bucket.gastosBrutos += m.importe;
+    } else if (m.tipo === 'devolucion') {
+      bucket.devoluciones += m.importe;
+    }
+    monthlyHistoryTotals.set(monthKey, bucket);
+  }
+
+  const trailingMonthKeys = Array.from(monthlyHistoryTotals.keys())
+    .sort((a, b) => a.localeCompare(b))
+    .slice(-12);
+
+  let histIngresos = 0;
+  let histGastosBrutos = 0;
+  let histDevoluciones = 0;
+
+  for (const key of trailingMonthKeys) {
+    const bucket = monthlyHistoryTotals.get(key)!;
+    histIngresos += bucket.ingresos;
+    histGastosBrutos += bucket.gastosBrutos;
+    histDevoluciones += bucket.devoluciones;
+  }
+
+  const histGastosNetos = Math.max(0, histGastosBrutos - histDevoluciones);
+  const mesesAnalizados = trailingMonthKeys.length;
+  const hasData = mesesAnalizados > 0 && (histIngresos > 0 || histGastosNetos > 0);
+  const hasIncome = histIngresos > 0;
+
+  const ingresosMensualesMedios = mesesAnalizados > 0 ? histIngresos / mesesAnalizados : 0;
+  const gastosMensualesMedios = mesesAnalizados > 0 ? histGastosNetos / mesesAnalizados : 0;
+  const ahorroMensualMedio = ingresosMensualesMedios - gastosMensualesMedios;
+
+  const ingresosAnualesProyectados = ingresosMensualesMedios * 12;
+  const gastosAnualesProyectados = gastosMensualesMedios * 12;
+  const ahorroAnualProyectado = ahorroMensualMedio * 12;
+
+  const tasaAhorroAnualPct = hasIncome
+    ? (ahorroAnualProyectado / ingresosAnualesProyectados) * 100
+    : 0;
+
+  let nivelSalud: SavingsHealthLevel = 'sin_datos';
+  if (hasData) {
+    if (!hasIncome || tasaAhorroAnualPct < 0) {
+      nivelSalud = 'deficit';
+    } else if (tasaAhorroAnualPct >= 20) {
+      nivelSalud = 'saludable';
+    } else if (tasaAhorroAnualPct >= 10) {
+      nivelSalud = 'moderada';
+    } else {
+      nivelSalud = 'ajustada';
+    }
+  }
+
+  const projectedAnnualSavings: ProjectedAnnualSavings = {
+    tasaAhorroAnualPct,
+    ahorroAnualProyectado,
+    ingresosAnualesProyectados,
+    gastosAnualesProyectados,
+    ahorroMensualMedio,
+    ingresosMensualesMedios,
+    gastosMensualesMedios,
+    mesesAnalizados,
+    primerMesYYYYMM: trailingMonthKeys[0] ?? null,
+    ultimoMesYYYYMM: trailingMonthKeys[trailingMonthKeys.length - 1] ?? null,
+    hasData,
+    hasIncome,
+    nivelSalud,
+  };
+
   return {
     periodRange,
     ingresosPeriodo,
@@ -408,8 +623,10 @@ export function computeEconomySummary(
       deltaAhorro,
       deltaGastosPct,
     },
+    projectedAnnualSavings,
     accountBalances: allAccountBalances,
     categoryBudgets,
+    monthlyBudgetGoals,
     upcomingMovements,
     visibleMovementsInPeriod,
     capacidadAhorroPreHipotecaMensual: Math.max(0, ingCurr - gasCurrPreHipoteca),

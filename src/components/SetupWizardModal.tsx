@@ -30,6 +30,7 @@ import {
   ModalidadFiscalHipoteca,
   UnidadFamiliarTipo,
 } from '../types/finance';
+import { computeFinancedInstallment } from '../utils/financing';
 import { formatEUR } from '../utils/formatters';
 
 interface SetupWizardModalProps {
@@ -79,6 +80,9 @@ export const SetupWizardModal: React.FC<SetupWizardModalProps> = ({
   const [newExpAmount, setNewExpAmount] = useState('');
   const [newExpCategory, setNewExpCategory] = useState('cat-vivienda');
   const [newExpRecurrence, setNewExpRecurrence] = useState<MovementRecurrence>('mensual');
+  const [newExpFinanciado, setNewExpFinanciado] = useState(false);
+  const [newExpMensualidades, setNewExpMensualidades] = useState('12');
+  const [newExpTinPct, setNewExpTinPct] = useState('0');
 
   const isAdolescent = draft.templateId === 'adolescente';
 
@@ -149,8 +153,8 @@ export const SetupWizardModal: React.FC<SetupWizardModalProps> = ({
 
   const handleAddWizardExpense = (e: React.FormEvent) => {
     e.preventDefault();
-    const amount = Number(newExpAmount);
-    if (!newExpConcept.trim() || Number.isNaN(amount) || amount <= 0) return;
+    const rawAmount = Number(newExpAmount);
+    if (!newExpConcept.trim() || Number.isNaN(rawAmount) || rawAmount <= 0) return;
 
     const catObj =
       draft.categories.find((c) => c.id === newExpCategory) ??
@@ -158,10 +162,15 @@ export const SetupWizardModal: React.FC<SetupWizardModalProps> = ({
     const primaryAcc = draft.accounts[0];
     const primaryMem = draft.members[0];
 
+    const isFin = newExpFinanciado;
+    const months = Math.max(2, Math.floor(Number(newExpMensualidades) || 12));
+    const tin = Math.max(0, Number(newExpTinPct) || 0);
+    const finCalc = isFin ? computeFinancedInstallment(rawAmount, months, tin) : null;
+
     const created: FinancialMovement = {
       id: `mov-wiz-exp-${Date.now()}-${Math.floor(Math.random() * 1000)}`,
       tipo: 'gasto',
-      importe: amount,
+      importe: isFin && finCalc ? finCalc.cuotaMensual : rawAmount,
       fecha: '2026-11-13',
       concepto: newExpConcept.trim(),
       categoriaId: catObj?.id ?? 'cat-vivienda',
@@ -169,8 +178,13 @@ export const SetupWizardModal: React.FC<SetupWizardModalProps> = ({
       cuentaId: primaryAcc?.id ?? '',
       miembroId: primaryMem?.id ?? draft.actingMemberId,
       visibilidad: draft.mode === 'familiar' ? 'compartida' : 'privada',
-      recurrencia: newExpRecurrence,
+      recurrencia: isFin ? 'mensual' : newExpRecurrence,
       estado: 'confirmado',
+      financiado: isFin || undefined,
+      importeTotalFinanciado: isFin ? rawAmount : undefined,
+      mensualidadesTotal: isFin ? months : undefined,
+      tinFinanciacionPct: isFin ? tin : undefined,
+      cuotaMensualFinanciada: isFin && finCalc ? finCalc.cuotaMensual : undefined,
     };
 
     setDraft((prev) => ({
@@ -179,6 +193,7 @@ export const SetupWizardModal: React.FC<SetupWizardModalProps> = ({
     }));
     setNewExpConcept('');
     setNewExpAmount('');
+    setNewExpFinanciado(false);
   };
 
   const handleApplyAndFinish = () => {
@@ -921,59 +936,114 @@ export const SetupWizardModal: React.FC<SetupWizardModalProps> = ({
 
               <form
                 onSubmit={handleAddWizardExpense}
-                className="grid grid-cols-1 gap-2.5 rounded-xl border border-slate-200 bg-slate-50 p-4 md:grid-cols-12 dark:border-slate-800 dark:bg-slate-950"
+                className="space-y-3 rounded-xl border border-slate-200 bg-slate-50 p-4 dark:border-slate-800 dark:bg-slate-950"
               >
-                <input
-                  type="text"
-                  required
-                  value={newExpConcept}
-                  onChange={(e) => setNewExpConcept(e.target.value)}
-                  placeholder="Nuevo gasto (ej. Alquiler, Luz, Supermercado...)"
-                  className="rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm md:col-span-4 dark:border-slate-700 dark:bg-slate-800 dark:text-white"
-                />
-                <select
-                  value={newExpCategory}
-                  onChange={(e) => setNewExpCategory(e.target.value)}
-                  aria-label="Categoría del gasto"
-                  className="rounded-lg border border-slate-300 bg-white px-2.5 py-2 text-sm md:col-span-3 dark:border-slate-700 dark:bg-slate-800 dark:text-white"
-                >
-                  {draft.categories
-                    .filter((c) => !c.oculta && c.tipo === 'gasto')
-                    .map((c) => (
-                      <option key={c.id} value={c.id}>
-                        {c.nombre}
-                      </option>
-                    ))}
-                </select>
-                <select
-                  value={newExpRecurrence}
-                  onChange={(e) => setNewExpRecurrence(e.target.value as MovementRecurrence)}
-                  aria-label="Recurrencia del gasto"
-                  className="rounded-lg border border-slate-300 bg-white px-2.5 py-2 text-sm md:col-span-2 dark:border-slate-700 dark:bg-slate-800 dark:text-white"
-                >
-                  <option value="mensual">Mensual</option>
-                  <option value="trimestral">Trimestral</option>
-                  <option value="anual">Anual</option>
-                  <option value="puntual">Puntual</option>
-                </select>
-                <input
-                  type="number"
-                  min="0.01"
-                  step="0.01"
-                  required
-                  value={newExpAmount}
-                  onChange={(e) => setNewExpAmount(e.target.value)}
-                  placeholder="Importe (€)"
-                  className="rounded-lg border border-slate-300 bg-white px-2.5 py-2 font-mono text-sm tabular-nums md:col-span-2 dark:border-slate-700 dark:bg-slate-800 dark:text-white"
-                />
-                <button
-                  type="submit"
-                  className="inline-flex items-center justify-center gap-1 rounded-lg bg-blue-700 px-3 py-2 text-sm font-semibold text-white hover:bg-blue-800 md:col-span-1"
-                  title="Añadir gasto al listado"
-                >
-                  <Plus className="h-4 w-4" />
-                  <span className="md:hidden">Añadir</span>
-                </button>
+                <div className="grid grid-cols-1 gap-2.5 md:grid-cols-12">
+                  <input
+                    type="text"
+                    required
+                    value={newExpConcept}
+                    onChange={(e) => setNewExpConcept(e.target.value)}
+                    placeholder="Nuevo gasto (ej. Alquiler, Luz, Electrodoméstico...)"
+                    className="rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm md:col-span-4 dark:border-slate-700 dark:bg-slate-800 dark:text-white"
+                  />
+                  <select
+                    value={newExpCategory}
+                    onChange={(e) => setNewExpCategory(e.target.value)}
+                    aria-label="Categoría del gasto"
+                    className="rounded-lg border border-slate-300 bg-white px-2.5 py-2 text-sm md:col-span-3 dark:border-slate-700 dark:bg-slate-800 dark:text-white"
+                  >
+                    {draft.categories
+                      .filter((c) => !c.oculta && c.tipo === 'gasto')
+                      .map((c) => (
+                        <option key={c.id} value={c.id}>
+                          {c.nombre}
+                        </option>
+                      ))}
+                  </select>
+                  <select
+                    value={newExpFinanciado ? 'mensual' : newExpRecurrence}
+                    disabled={newExpFinanciado}
+                    onChange={(e) => setNewExpRecurrence(e.target.value as MovementRecurrence)}
+                    aria-label="Recurrencia del gasto"
+                    className="rounded-lg border border-slate-300 bg-white px-2.5 py-2 text-sm disabled:opacity-60 md:col-span-2 dark:border-slate-700 dark:bg-slate-800 dark:text-white"
+                  >
+                    <option value="mensual">Mensual</option>
+                    <option value="trimestral">Trimestral</option>
+                    <option value="anual">Anual</option>
+                    <option value="puntual">Puntual</option>
+                  </select>
+                  <input
+                    type="number"
+                    min="0.01"
+                    step="0.01"
+                    required
+                    value={newExpAmount}
+                    onChange={(e) => setNewExpAmount(e.target.value)}
+                    placeholder={newExpFinanciado ? 'Total financiado (€)' : 'Importe (€)'}
+                    className="rounded-lg border border-slate-300 bg-white px-2.5 py-2 font-mono text-sm tabular-nums md:col-span-2 dark:border-slate-700 dark:bg-slate-800 dark:text-white"
+                  />
+                  <button
+                    type="submit"
+                    className="inline-flex items-center justify-center gap-1 rounded-lg bg-blue-700 px-3 py-2 text-sm font-semibold text-white hover:bg-blue-800 md:col-span-1"
+                    title="Añadir gasto al listado"
+                  >
+                    <Plus className="h-4 w-4" />
+                    <span className="md:hidden">Añadir</span>
+                  </button>
+                </div>
+
+                <div className="flex flex-wrap items-center gap-4 text-xs font-medium text-slate-700 dark:text-slate-300">
+                  <label className="inline-flex items-center gap-2">
+                    <input
+                      type="checkbox"
+                      checked={newExpFinanciado}
+                      onChange={(e) => setNewExpFinanciado(e.target.checked)}
+                    />
+                    <span>
+                      Gasto extraordinario financiado (indicar importe total y mensualidades)
+                    </span>
+                  </label>
+
+                  {newExpFinanciado && (
+                    <>
+                      <label className="inline-flex items-center gap-1.5">
+                        <span>Mensualidades:</span>
+                        <input
+                          type="number"
+                          min="2"
+                          max="120"
+                          value={newExpMensualidades}
+                          onChange={(e) => setNewExpMensualidades(e.target.value)}
+                          className="w-16 rounded border border-slate-300 bg-white px-2 py-1 font-mono text-xs tabular-nums dark:border-slate-700 dark:bg-slate-800"
+                        />
+                      </label>
+                      <label className="inline-flex items-center gap-1.5">
+                        <span>TIN (%):</span>
+                        <input
+                          type="number"
+                          min="0"
+                          step="0.1"
+                          value={newExpTinPct}
+                          onChange={(e) => setNewExpTinPct(e.target.value)}
+                          className="w-16 rounded border border-slate-300 bg-white px-2 py-1 font-mono text-xs tabular-nums dark:border-slate-700 dark:bg-slate-800"
+                        />
+                      </label>
+                      {Number(newExpAmount) > 0 && (
+                        <span className="font-semibold text-blue-700 dark:text-blue-400">
+                          Cuota mensual:{' '}
+                          {formatEUR(
+                            computeFinancedInstallment(
+                              Number(newExpAmount),
+                              Number(newExpMensualidades) || 12,
+                              Number(newExpTinPct) || 0
+                            ).cuotaMensual
+                          )}
+                        </span>
+                      )}
+                    </>
+                  )}
+                </div>
               </form>
 
               <div className="divide-y divide-slate-200 dark:divide-slate-800">

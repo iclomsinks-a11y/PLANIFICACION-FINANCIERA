@@ -2,13 +2,18 @@ import React, { useEffect, useState } from 'react';
 import {
   Check,
   FilePlus2,
+  GitCompare,
+  Mail,
   Play,
   Plus,
   Save,
+  ScanLine,
   ShieldAlert,
+  ShieldCheck,
   Trash2,
+  TrendingUp,
 } from 'lucide-react';
-import { EconomySummaryResult } from '../engines/economyEngine';
+import { EconomySummaryResult, SavingsHealthLevel } from '../engines/economyEngine';
 import {
   EconomyWorkspaceState,
   FinancialMovement,
@@ -16,7 +21,7 @@ import {
   PeriodPreset,
   SavedSupuesto,
 } from '../types/economy';
-import { formatEUR } from '../utils/formatters';
+import { formatEUR, formatPct, formatYYYYMM } from '../utils/formatters';
 
 interface OverviewDashboardProps {
   state: EconomyWorkspaceState;
@@ -36,7 +41,13 @@ interface OverviewDashboardProps {
   onChangeCustomRange: (start: string, end: string) => void;
   onQuickAddMovement: (mov: Omit<FinancialMovement, 'id'>) => void;
   onConfirmMovement: (id: string) => void;
-  onNavigate: (section: 'movimientos' | 'cuentas' | 'hipoteca' | 'irpf' | 'poster') => void;
+  onNavigate: (
+    section: 'movimientos' | 'cuentas' | 'comparador' | 'hipoteca' | 'irpf' | 'poster'
+  ) => void;
+  onOpenGeminiAssistant: (mode: 'texto' | 'ocr') => void;
+  onOpenGmailScanner: () => void;
+  onOpenTestFamilyModal: () => void;
+  pendingGmailInvoicesCount: number;
 }
 
 export const OverviewDashboard: React.FC<OverviewDashboardProps> = ({
@@ -58,6 +69,10 @@ export const OverviewDashboard: React.FC<OverviewDashboardProps> = ({
   onQuickAddMovement,
   onConfirmMovement,
   onNavigate,
+  onOpenGeminiAssistant,
+  onOpenGmailScanner,
+  onOpenTestFamilyModal,
+  pendingGmailInvoicesCount,
 }) => {
   const [saveAsName, setSaveAsName] = useState(activeSupuesto.nombre);
   const [saveFeedback, setSaveFeedback] = useState<string | null>(null);
@@ -139,6 +154,61 @@ export const OverviewDashboard: React.FC<OverviewDashboardProps> = ({
 
   const getCategoryName = (id: string) =>
     state.categories.find((c) => c.id === id)?.nombre ?? 'Sin categoría';
+
+  const actingMember = state.members.find((m) => m.id === state.actingMemberId);
+  const projected = summary.projectedAnnualSavings;
+
+  const healthMeta: Record<
+    SavingsHealthLevel,
+    { label: string; valueClass: string; badgeClass: string; barClass: string }
+  > = {
+    saludable: {
+      label: 'Salud financiera sólida (≥ 20 %)',
+      valueClass: 'text-emerald-700 dark:text-emerald-400',
+      badgeClass:
+        'border-emerald-200 bg-emerald-50 text-emerald-800 dark:border-emerald-900/70 dark:bg-emerald-950/40 dark:text-emerald-300',
+      barClass: 'bg-emerald-600',
+    },
+    moderada: {
+      label: 'Margen de ahorro moderado (10–19 %)',
+      valueClass: 'text-blue-700 dark:text-blue-400',
+      badgeClass:
+        'border-blue-200 bg-blue-50 text-blue-800 dark:border-blue-900/70 dark:bg-blue-950/40 dark:text-blue-300',
+      barClass: 'bg-blue-600',
+    },
+    ajustada: {
+      label: 'Capacidad de ahorro ajustada (< 10 %)',
+      valueClass: 'text-amber-700 dark:text-amber-400',
+      badgeClass:
+        'border-amber-200 bg-amber-50 text-amber-800 dark:border-amber-900/70 dark:bg-amber-950/40 dark:text-amber-300',
+      barClass: 'bg-amber-500',
+    },
+    deficit: {
+      label: projected.hasIncome
+        ? 'Déficit anual proyectado'
+        : 'Sin ingresos en el historial',
+      valueClass: 'text-red-700 dark:text-red-400',
+      badgeClass:
+        'border-red-200 bg-red-50 text-red-800 dark:border-red-900/70 dark:bg-red-950/40 dark:text-red-300',
+      barClass: 'bg-red-600',
+    },
+    sin_datos: {
+      label: 'Sin historial suficiente',
+      valueClass: 'text-slate-600 dark:text-slate-400',
+      badgeClass:
+        'border-slate-200 bg-slate-100 text-slate-700 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-300',
+      barClass: 'bg-slate-400',
+    },
+  };
+
+  const currentHealth = healthMeta[projected.nivelSalud];
+  const historySpanLabel =
+    projected.primerMesYYYYMM && projected.ultimoMesYYYYMM
+      ? projected.primerMesYYYYMM === projected.ultimoMesYYYYMM
+        ? formatYYYYMM(projected.primerMesYYYYMM, true)
+        : `${formatYYYYMM(projected.primerMesYYYYMM, true)} – ${formatYYYYMM(projected.ultimoMesYYYYMM, true)}`
+      : 'Sin movimientos registrados';
+  const clampedSavingsBarPct = Math.max(0, Math.min(100, projected.tasaAhorroAnualPct));
 
   return (
     <div className="space-y-6">
@@ -287,6 +357,65 @@ export const OverviewDashboard: React.FC<OverviewDashboardProps> = ({
         )}
       </section>
 
+      {/* Aviso de Nuevas Facturas Detectadas en Gmail */}
+      {pendingGmailInvoicesCount > 0 && (
+        <section className="flex flex-wrap items-center justify-between gap-4 rounded-xl border border-amber-300 bg-amber-50 p-4 text-amber-950 dark:border-amber-900/70 dark:bg-amber-950/30 dark:text-amber-200">
+          <div className="flex items-center gap-3 text-base">
+            <Mail className="h-5 w-5 shrink-0" />
+            <span>
+              <strong>
+                {pendingGmailInvoicesCount}{' '}
+                {pendingGmailInvoicesCount === 1
+                  ? 'nueva factura recibida detectada en Gmail'
+                  : 'nuevas facturas recibidas detectadas en Gmail'}
+                :
+              </strong>{' '}
+              Revísala antes de adjuntarla como gasto en el supuesto activo.
+            </span>
+          </div>
+          <button
+            type="button"
+            onClick={onOpenGmailScanner}
+            className="rounded-lg bg-amber-700 px-4 py-2 text-sm font-semibold text-white hover:bg-amber-800 whitespace-nowrap"
+          >
+            Revisar y adjuntar
+          </button>
+        </section>
+      )}
+
+      {/* Estado de acceso / autorización del miembro activo en Unidad Familiar */}
+      {state.mode === 'familiar' && actingMember && actingMember.rol !== 'admin' && (
+        <section
+          className={`flex flex-wrap items-center justify-between gap-4 rounded-xl border p-4 ${
+            actingMember.rol === 'adulto' && actingMember.autorizadoVerTodo
+              ? 'border-emerald-200 bg-emerald-50 text-emerald-950 dark:border-emerald-900/70 dark:bg-emerald-950/30 dark:text-emerald-200'
+              : 'border-blue-200 bg-blue-50 text-blue-950 dark:border-blue-900/70 dark:bg-blue-950/30 dark:text-blue-200'
+          }`}
+        >
+          <div className="flex items-center gap-3 text-sm">
+            <ShieldCheck className="h-5 w-5 shrink-0" />
+            <span>
+              <strong>
+                Sesión simulada ({actingMember.nombre}
+                {actingMember.email ? ` · ${actingMember.email}` : ''}):
+              </strong>{' '}
+              {actingMember.rol === 'adulto'
+                ? actingMember.autorizadoVerTodo
+                  ? 'Autorizado por el titular de la cuenta para ver toda la unidad familiar.'
+                  : 'Ves tus datos y los compartidos. Necesitas autorización del titular para ver toda la unidad familiar.'
+                : 'Acceso limitado exclusivamente a tus propios datos económicos.'}
+            </span>
+          </div>
+          <button
+            type="button"
+            onClick={onOpenTestFamilyModal}
+            className="rounded-lg bg-slate-900 px-3.5 py-2 text-xs font-semibold text-white hover:bg-slate-800 whitespace-nowrap dark:bg-white dark:text-slate-900"
+          >
+            Cambiar correo / Autorizaciones
+          </button>
+        </section>
+      )}
+
       {/* Aviso Control Parental si aplica */}
       {summary.parentalAlert && (
         <section
@@ -385,15 +514,169 @@ export const OverviewDashboard: React.FC<OverviewDashboardProps> = ({
         </div>
       </section>
 
+      {/* Tarjeta de Resumen: Tasa de Ahorro Anual Proyectada (Salud Financiera a Largo Plazo) */}
+      <section
+        aria-label="Tasa de ahorro anual proyectada"
+        className="rounded-xl border border-slate-200 bg-white p-5 dark:border-slate-800 dark:bg-slate-900"
+      >
+        <div className="flex flex-wrap items-start justify-between gap-3 border-b border-slate-200 pb-4 dark:border-slate-800">
+          <div className="flex items-start gap-3">
+            <div className="mt-0.5 flex h-9 w-9 shrink-0 items-center justify-center rounded-lg border border-slate-200 bg-slate-50 text-slate-700 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-200">
+              <TrendingUp className="h-5 w-5" />
+            </div>
+            <div>
+              <h2 className="text-lg font-bold text-slate-900 dark:text-white">
+                Tasa de Ahorro Anual Proyectada
+              </h2>
+              <p className="text-sm text-slate-500 dark:text-slate-400">
+                {projected.hasData
+                  ? `Proyección anualizada sobre ${projected.mesesAnalizados} ${
+                      projected.mesesAnalizados === 1 ? 'mes' : 'meses'
+                    } de historial (${historySpanLabel}) · Excluye transferencias internas`
+                  : 'Registra ingresos y gastos en tu historial para calcular tu proyección anual'}
+              </p>
+            </div>
+          </div>
+
+          <div className="flex flex-wrap items-center gap-3">
+            <span
+              className={`inline-flex items-center rounded-md border px-2.5 py-1 text-xs font-semibold ${currentHealth.badgeClass}`}
+            >
+              {currentHealth.label}
+            </span>
+            <button
+              type="button"
+              onClick={() => onNavigate('movimientos')}
+              className="text-sm font-semibold text-blue-700 hover:underline dark:text-blue-400"
+            >
+              Ver historial →
+            </button>
+          </div>
+        </div>
+
+        <div className="mt-4 grid grid-cols-1 gap-5 lg:grid-cols-12 lg:items-center">
+          <div className="lg:col-span-5">
+            <div className="flex flex-wrap items-baseline gap-3">
+              <span
+                className={`font-mono text-3xl font-bold tracking-tight tabular-nums lg:text-4xl ${currentHealth.valueClass}`}
+              >
+                {projected.hasData
+                  ? projected.hasIncome
+                    ? formatPct(projected.tasaAhorroAnualPct)
+                    : '—'
+                  : '0,00 %'}
+              </span>
+              {projected.hasData && (
+                <span className="font-mono text-sm font-semibold text-slate-600 tabular-nums dark:text-slate-300">
+                  ({projected.ahorroMensualMedio >= 0 ? '+' : ''}
+                  {formatEUR(projected.ahorroMensualMedio)}/mes)
+                </span>
+              )}
+            </div>
+
+            <div className="mt-3 space-y-1.5">
+              <div className="relative h-2.5 w-full overflow-hidden rounded-full bg-slate-100 dark:bg-slate-800">
+                <div
+                  className={`h-full rounded-full transition-all ${currentHealth.barClass}`}
+                  style={{ width: `${clampedSavingsBarPct}%` }}
+                />
+                <div
+                  title="Referencia recomendada de ahorro: 20 %"
+                  className="absolute top-0 bottom-0 left-[20%] w-0.5 bg-slate-900/40 dark:bg-white/50"
+                />
+              </div>
+              <div className="flex justify-between text-xs text-slate-500 dark:text-slate-400">
+                <span>0 %</span>
+                <span>Objetivo salud financiera: 20 %</span>
+                <span>100 %</span>
+              </div>
+            </div>
+          </div>
+
+          <div className="grid grid-cols-1 gap-3 sm:grid-cols-3 lg:col-span-7">
+            <div className="rounded-lg border border-slate-200 bg-slate-50/70 p-3.5 dark:border-slate-800 dark:bg-slate-800/50">
+              <p className="text-xs font-medium text-slate-600 dark:text-slate-400">
+                Ingresos Anuales Est.
+              </p>
+              <p className="mt-1 font-mono text-lg font-bold text-emerald-700 tabular-nums dark:text-emerald-400">
+                {formatEUR(projected.ingresosAnualesProyectados)}
+              </p>
+              <p className="mt-0.5 font-mono text-xs text-slate-500 tabular-nums dark:text-slate-400">
+                {formatEUR(projected.ingresosMensualesMedios)}/mes
+              </p>
+            </div>
+
+            <div className="rounded-lg border border-slate-200 bg-slate-50/70 p-3.5 dark:border-slate-800 dark:bg-slate-800/50">
+              <p className="text-xs font-medium text-slate-600 dark:text-slate-400">
+                Gastos Anuales Est.
+              </p>
+              <p className="mt-1 font-mono text-lg font-bold text-red-700 tabular-nums dark:text-red-400">
+                {formatEUR(projected.gastosAnualesProyectados)}
+              </p>
+              <p className="mt-0.5 font-mono text-xs text-slate-500 tabular-nums dark:text-slate-400">
+                {formatEUR(projected.gastosMensualesMedios)}/mes
+              </p>
+            </div>
+
+            <div className="rounded-lg border border-slate-200 bg-slate-50/70 p-3.5 dark:border-slate-800 dark:bg-slate-800/50">
+              <p className="text-xs font-medium text-slate-600 dark:text-slate-400">
+                Ahorro Anual Proyectado
+              </p>
+              <p
+                className={`mt-1 font-mono text-lg font-bold tabular-nums ${
+                  projected.ahorroAnualProyectado >= 0
+                    ? 'text-emerald-700 dark:text-emerald-400'
+                    : 'text-red-700 dark:text-red-400'
+                }`}
+              >
+                {projected.ahorroAnualProyectado >= 0 ? '+' : ''}
+                {formatEUR(projected.ahorroAnualProyectado)}
+              </p>
+              <p className="mt-0.5 text-xs text-slate-500 dark:text-slate-400">
+                Neta de devoluciones
+              </p>
+            </div>
+          </div>
+        </div>
+      </section>
+
       {/* Registro Rápido en 10 segundos */}
       <section className="rounded-xl border border-slate-200 bg-white p-5 dark:border-slate-800 dark:bg-slate-900">
-        <div className="flex flex-wrap items-center justify-between gap-2 pb-3">
-          <h2 className="text-lg font-bold text-slate-900 dark:text-white">
-            Anotar Movimiento Rápido
-          </h2>
-          <span className="text-sm text-slate-500 dark:text-slate-400">
-            Las transferencias entre cuentas propias no duplican ingresos ni gastos
-          </span>
+        <div className="flex flex-wrap items-center justify-between gap-3 pb-3">
+          <div>
+            <h2 className="text-lg font-bold text-slate-900 dark:text-white">
+              Anotar Movimiento Rápido
+            </h2>
+            <span className="text-sm text-slate-500 dark:text-slate-400">
+              Las transferencias entre cuentas propias no duplican ingresos ni gastos
+            </span>
+          </div>
+          <div className="flex flex-wrap items-center gap-2">
+            <button
+              type="button"
+              onClick={() => onOpenGeminiAssistant('ocr')}
+              className="inline-flex items-center gap-1.5 rounded-lg border border-blue-200 bg-blue-50 px-3 py-1.5 text-sm font-semibold text-blue-800 hover:bg-blue-100 whitespace-nowrap dark:border-blue-800 dark:bg-blue-950/40 dark:text-blue-300"
+            >
+              <ScanLine className="h-4 w-4" />
+              Escanear Ticket / IA
+            </button>
+            <button
+              type="button"
+              onClick={onOpenGmailScanner}
+              className="inline-flex items-center gap-1.5 rounded-lg border border-slate-300 bg-white px-3 py-1.5 text-sm font-semibold text-slate-700 hover:bg-slate-50 whitespace-nowrap dark:border-slate-700 dark:bg-slate-800 dark:text-slate-200"
+            >
+              <Mail className="h-4 w-4" />
+              Facturas Email
+            </button>
+            <button
+              type="button"
+              onClick={() => onNavigate('comparador')}
+              className="inline-flex items-center gap-1.5 rounded-lg border border-slate-300 bg-white px-3 py-1.5 text-sm font-semibold text-slate-700 hover:bg-slate-50 whitespace-nowrap dark:border-slate-700 dark:bg-slate-800 dark:text-slate-200"
+            >
+              <GitCompare className="h-4 w-4" />
+              Comparador ¿Y si?
+            </button>
+          </div>
         </div>
 
         <form
