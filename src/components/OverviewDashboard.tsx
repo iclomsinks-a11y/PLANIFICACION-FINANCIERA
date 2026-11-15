@@ -7,6 +7,7 @@ import {
   Play,
   Plus,
   Save,
+  Scale,
   ScanLine,
   ShieldAlert,
   ShieldCheck,
@@ -42,7 +43,14 @@ interface OverviewDashboardProps {
   onQuickAddMovement: (mov: Omit<FinancialMovement, 'id'>) => void;
   onConfirmMovement: (id: string) => void;
   onNavigate: (
-    section: 'movimientos' | 'cuentas' | 'comparador' | 'hipoteca' | 'irpf' | 'poster'
+    section:
+      | 'movimientos'
+      | 'cuentas'
+      | 'comparador'
+      | 'hipoteca'
+      | 'irpf'
+      | 'asesor'
+      | 'poster'
   ) => void;
   onOpenGeminiAssistant: (mode: 'texto' | 'ocr') => void;
   onOpenGmailScanner: () => void;
@@ -652,6 +660,14 @@ export const OverviewDashboard: React.FC<OverviewDashboardProps> = ({
             </span>
           </div>
           <div className="flex flex-wrap items-center gap-2">
+            <button
+              type="button"
+              onClick={() => onNavigate('asesor')}
+              className="inline-flex items-center gap-1.5 rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-1.5 text-sm font-semibold text-emerald-800 hover:bg-emerald-100 whitespace-nowrap dark:border-emerald-800 dark:bg-emerald-950/40 dark:text-emerald-300"
+            >
+              <Scale className="h-4 w-4" />
+              Asesor Fiscal y Económico
+            </button>
             <button
               type="button"
               onClick={() => onOpenGeminiAssistant('ocr')}

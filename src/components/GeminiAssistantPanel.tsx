@@ -5,7 +5,9 @@ import {
   FileImage,
   Loader2,
   MessageSquareText,
+  Mic,
   ScanLine,
+  Square,
   Upload,
   X,
 } from 'lucide-react';
@@ -69,6 +71,13 @@ export const GeminiAssistantPanel: React.FC<GeminiAssistantPanelProps> = ({
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
 
+  // Dictado de voz para movimientos (gemini-3.5-transcribe)
+  const [dictatingVoice, setDictatingVoice] = useState(false);
+  const [transcribingVoice, setTranscribingVoice] = useState(false);
+  const voiceRecorderRef = useRef<MediaRecorder | null>(null);
+  const voiceStreamRef = useRef<MediaStream | null>(null);
+  const voiceChunksRef = useRef<Blob[]>([]);
+
   const stopCamera = () => {
     if (streamRef.current) {
       for (const track of streamRef.current.getTracks()) {
@@ -86,8 +95,88 @@ export const GeminiAssistantPanel: React.FC<GeminiAssistantPanelProps> = ({
           track.stop();
         }
       }
+      if (voiceStreamRef.current) {
+        for (const track of voiceStreamRef.current.getTracks()) {
+          track.stop();
+        }
+      }
     };
   }, []);
+
+  const handleToggleVoiceDictation = async () => {
+    setErrorMsg(null);
+    if (dictatingVoice && voiceRecorderRef.current) {
+      voiceRecorderRef.current.stop();
+      setDictatingVoice(false);
+      return;
+    }
+    if (!navigator.mediaDevices?.getUserMedia) {
+      setErrorMsg('Tu navegador no permite acceso al micrófono para dictar movimientos.');
+      return;
+    }
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      voiceStreamRef.current = stream;
+      voiceChunksRef.current = [];
+      const mimeType = MediaRecorder.isTypeSupported('audio/webm')
+        ? 'audio/webm'
+        : MediaRecorder.isTypeSupported('audio/mp4')
+          ? 'audio/mp4'
+          : '';
+      const recorder = mimeType
+        ? new MediaRecorder(stream, { mimeType })
+        : new MediaRecorder(stream);
+      voiceRecorderRef.current = recorder;
+
+      recorder.ondataavailable = (ev) => {
+        if (ev.data.size > 0) voiceChunksRef.current.push(ev.data);
+      };
+      recorder.onstop = () => {
+        for (const t of stream.getTracks()) t.stop();
+        voiceStreamRef.current = null;
+        const blob = new Blob(voiceChunksRef.current, {
+          type: recorder.mimeType || 'audio/webm',
+        });
+        if (blob.size === 0) return;
+
+        setTranscribingVoice(true);
+        const reader = new FileReader();
+        reader.onloadend = async () => {
+          try {
+            const base64 = typeof reader.result === 'string' ? reader.result : '';
+            const res = await fetch('/api/gemini/transcribe', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                audioBase64: base64,
+                mimeType: blob.type || 'audio/webm',
+              }),
+            });
+            const data = (await res.json()) as { transcript?: string; error?: string };
+            if (!res.ok) {
+              throw new Error(data.error || 'Error al transcribir el dictado de voz.');
+            }
+            if (data.transcript) {
+              setTextInput((prev) =>
+                prev.trim() ? `${prev.trim()} ${data.transcript}` : data.transcript!
+              );
+            }
+          } catch (err) {
+            setErrorMsg(
+              err instanceof Error ? err.message : 'No se pudo transcribir el audio.'
+            );
+          } finally {
+            setTranscribingVoice(false);
+          }
+        };
+        reader.readAsDataURL(blob);
+      };
+      recorder.start();
+      setDictatingVoice(true);
+    } catch {
+      setErrorMsg('No se pudo activar el micrófono. Comprueba los permisos.');
+    }
+  };
 
   const handleOpenCamera = async () => {
     setErrorMsg(null);
@@ -493,10 +582,38 @@ export const GeminiAssistantPanel: React.FC<GeminiAssistantPanelProps> = ({
               </div>
             )}
 
-            <div className="flex items-center justify-end gap-3">
+            <div className="flex flex-wrap items-center justify-between gap-3">
+              <button
+                type="button"
+                onClick={() => void handleToggleVoiceDictation()}
+                disabled={transcribingVoice || loading}
+                className={`inline-flex items-center gap-2 rounded-lg px-4 py-2.5 text-sm font-semibold transition-colors whitespace-nowrap ${
+                  dictatingVoice
+                    ? 'bg-red-700 text-white hover:bg-red-800'
+                    : 'border border-slate-300 bg-white text-slate-800 hover:bg-slate-50 dark:border-slate-700 dark:bg-slate-800 dark:text-white dark:hover:bg-slate-700'
+                } disabled:opacity-60`}
+              >
+                {transcribingVoice ? (
+                  <>
+                    <Loader2 className="h-4 w-4 animate-spin" />
+                    Transcribiendo audio...
+                  </>
+                ) : dictatingVoice ? (
+                  <>
+                    <Square className="h-4 w-4 fill-current" />
+                    Detener dictado
+                  </>
+                ) : (
+                  <>
+                    <Mic className="h-4 w-4" />
+                    Dictar movimiento por voz
+                  </>
+                )}
+              </button>
+
               <button
                 type="submit"
-                disabled={loading}
+                disabled={loading || transcribingVoice}
                 className="inline-flex items-center gap-2 rounded-lg bg-blue-700 px-5 py-2.5 text-sm font-semibold text-white hover:bg-blue-800 disabled:opacity-60"
               >
                 {loading ? (

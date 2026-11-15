@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { User } from 'firebase/auth';
-import { FlaskConical, Moon, RotateCcw, Sun } from 'lucide-react';
+import { FlaskConical, Moon, RotateCcw, Scale, Sun } from 'lucide-react';
 import { AccountsAndFunds } from './components/AccountsAndFunds';
+import { FinancialAdvisorPanel } from './components/FinancialAdvisorPanel';
 import { GeminiAssistantPanel } from './components/GeminiAssistantPanel';
 import { GmailInvoicesPanel } from './components/GmailInvoicesPanel';
 import { GoogleSignInButton } from './components/GoogleSignInButton';
@@ -909,6 +910,23 @@ export default function App() {
 
             <button
               type="button"
+              onClick={() => {
+                setActiveSection('asesor');
+                setPosterFullscreen(false);
+              }}
+              className={`inline-flex items-center gap-1.5 rounded-lg border px-3 py-1.5 text-sm font-semibold transition-colors whitespace-nowrap shrink-0 ${
+                activeSection === 'asesor'
+                  ? 'border-emerald-700 bg-emerald-700 text-white'
+                  : 'border-emerald-200 bg-emerald-50 text-emerald-800 hover:bg-emerald-100 dark:border-emerald-800 dark:bg-emerald-950/40 dark:text-emerald-300'
+              }`}
+              title="Consultar al Asesor Fiscal y Económico (Chat, Búsqueda Google, Transcripción y Voz en Directo)"
+            >
+              <Scale className="h-4 w-4" />
+              Asesor Fiscal IA
+            </button>
+
+            <button
+              type="button"
               onClick={() => setTestAccessModalOpen(true)}
               className="inline-flex items-center gap-1.5 rounded-lg border border-blue-200 bg-blue-50 px-3 py-1.5 text-sm font-semibold text-blue-800 hover:bg-blue-100 whitespace-nowrap shrink-0 dark:border-blue-800 dark:bg-blue-950/40 dark:text-blue-300"
               title="Acceso ficticio por correo y autorizaciones de la unidad familiar"
@@ -1069,6 +1087,19 @@ export default function App() {
               updateActiveState((prev) => ({ ...prev, irpfInput }))
             }
             onSyncFromBudgetAndMortgage={handleSyncIrpfFromEconomy}
+          />
+        )}
+
+        {activeSection === 'asesor' && (
+          <FinancialAdvisorPanel
+            state={activeState}
+            summary={summary}
+            effectiveMortgageInput={effectiveMortgageInput}
+            irpfHabilitado={irpfHabilitado}
+            onNavigate={(sec) => {
+              setActiveSection(sec);
+              setPosterFullscreen(false);
+            }}
           />
         )}
 

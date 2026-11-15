@@ -38,6 +38,7 @@ export type MainSection =
   | 'comparador'
   | 'hipoteca'
   | 'irpf'
+  | 'asesor'
   | 'poster';
 
 export type SituacionLaboral =

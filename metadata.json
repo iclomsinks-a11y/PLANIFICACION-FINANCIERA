@@ -1,6 +1,6 @@
 {
   "name": "Patrimonio & IRPF España",
   "description": "Plataforma determinista de gestión presupuestaria COICOP, optimización fiscal IRPF (Ley 35/2006 AEAT) y simulación hipotecaria con carencia CBP y cuenta remunerada.",
-  "requestFramePermissions": ["camera"],
+  "requestFramePermissions": ["camera", "microphone"],
   "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
 }
