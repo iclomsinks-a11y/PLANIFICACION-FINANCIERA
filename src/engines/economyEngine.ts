@@ -1,11 +1,13 @@
 import {
   AccountType,
+  CardSubtype,
   CategoryConfig,
   EconomyMode,
   EconomyWorkspaceState,
   FinancialAccount,
   FinancialMovement,
   HouseholdMember,
+  MovementRecurrence,
   PeriodPreset,
   SituacionLaboral,
 } from '../types/economy';
@@ -273,8 +275,20 @@ export interface ProjectedAnnualSavings {
   nivelSalud: SavingsHealthLevel;
 }
 
+export interface ProratedPeriodItem {
+  movement: FinancialMovement;
+  effectiveAmount: number;
+  monthlyShare: number;
+  monthsCovered: number;
+  divisor: number;
+  isProrated: boolean;
+}
+
 export interface EconomySummaryResult {
   periodRange: PeriodRange;
+  prorrateoActivo: boolean;
+  proratedExpenseCountInPeriod: number;
+  effectiveAmountByMovementId: Record<string, ProratedPeriodItem>;
   ingresosPeriodo: number;
   gastosPeriodo: number;
   ahorroNetoPeriodo: number;
@@ -305,6 +319,132 @@ export interface EconomySummaryResult {
   };
 }
 
+export function getCalendarMonthsInPeriod(range: PeriodRange): string[] {
+  const startYM = range.start.slice(0, 7);
+  const endYM = range.end.slice(0, 7);
+  if (
+    !/^\d{4}-\d{2}$/.test(startYM) ||
+    !/^\d{4}-\d{2}$/.test(endYM) ||
+    startYM > endYM
+  ) {
+    return [];
+  }
+  const [sy, sm] = startYM.split('-').map(Number);
+  const [ey, em] = endYM.split('-').map(Number);
+  const months: string[] = [];
+  let y = sy;
+  let m = sm;
+  while (y < ey || (y === ey && m <= em)) {
+    months.push(`${y}-${String(m).padStart(2, '0')}`);
+    m += 1;
+    if (m > 12) {
+      m = 1;
+      y += 1;
+    }
+    if (months.length > 120) break;
+  }
+  return months;
+}
+
+export function isProratableExpense(m: FinancialMovement): boolean {
+  return (
+    m.tipo === 'gasto' &&
+    !m.financiado &&
+    (m.recurrencia === 'trimestral' || m.recurrencia === 'anual')
+  );
+}
+
+export function getProratedCoverageMonths(
+  fechaISO: string,
+  recurrencia: MovementRecurrence
+): string[] | null {
+  const ym = fechaISO.slice(0, 7);
+  if (!/^\d{4}-\d{2}$/.test(ym)) return null;
+  const [yStr, mStr] = ym.split('-');
+  const year = Number(yStr);
+  const month = Number(mStr);
+
+  if (recurrencia === 'trimestral') {
+    const qStartMonth = Math.floor((month - 1) / 3) * 3 + 1;
+    return [
+      `${year}-${String(qStartMonth).padStart(2, '0')}`,
+      `${year}-${String(qStartMonth + 1).padStart(2, '0')}`,
+      `${year}-${String(qStartMonth + 2).padStart(2, '0')}`,
+    ];
+  }
+
+  if (recurrencia === 'anual') {
+    return Array.from(
+      { length: 12 },
+      (_, idx) => `${year}-${String(idx + 1).padStart(2, '0')}`
+    );
+  }
+
+  return null;
+}
+
+export function getMonthlyProratedShare(m: FinancialMovement): number {
+  if (!isProratableExpense(m)) return m.importe;
+  return m.recurrencia === 'trimestral' ? m.importe / 3 : m.importe / 12;
+}
+
+export function getMovementEffectiveAmountForPeriod(
+  m: FinancialMovement,
+  periodRange: PeriodRange,
+  periodMonths: string[],
+  prorratearGastos: boolean
+): {
+  included: boolean;
+  amount: number;
+  monthsCovered: number;
+  divisor: number;
+  isProrated: boolean;
+} {
+  const inDirectRange = m.fecha >= periodRange.start && m.fecha <= periodRange.end;
+
+  if (!prorratearGastos || !isProratableExpense(m)) {
+    return {
+      included: inDirectRange,
+      amount: inDirectRange ? m.importe : 0,
+      monthsCovered: inDirectRange ? 1 : 0,
+      divisor: 1,
+      isProrated: false,
+    };
+  }
+
+  const coverageMonths = getProratedCoverageMonths(m.fecha, m.recurrencia);
+  if (!coverageMonths) {
+    return {
+      included: inDirectRange,
+      amount: inDirectRange ? m.importe : 0,
+      monthsCovered: inDirectRange ? 1 : 0,
+      divisor: 1,
+      isProrated: false,
+    };
+  }
+
+  const coverageSet = new Set(coverageMonths);
+  const overlapCount = periodMonths.filter((ym) => coverageSet.has(ym)).length;
+  if (overlapCount === 0) {
+    return {
+      included: false,
+      amount: 0,
+      monthsCovered: 0,
+      divisor: coverageMonths.length,
+      isProrated: true,
+    };
+  }
+
+  const monthlyShare = m.importe / coverageMonths.length;
+  return {
+    included: true,
+    amount: monthlyShare * overlapCount,
+    monthsCovered: overlapCount,
+    divisor: coverageMonths.length,
+    isProrated: true,
+  };
+}
+
 export const ACCOUNT_TYPE_LABELS: Record<AccountType, string> = {
   corriente: 'Cuenta corriente',
   ahorro: 'Cuenta de ahorro',
@@ -313,6 +453,267 @@ export const ACCOUNT_TYPE_LABELS: Record<AccountType, string> = {
   tarjeta: 'Tarjeta',
   personalizada: 'Personalizada',
 };
+
+export const CARD_SUBTYPE_LABELS: Record<CardSubtype, string> = {
+  credito: 'Crédito',
+  debito: 'Débito',
+  monedero: 'Monedero',
+  virtual: 'Virtual',
+  otras: 'Otras',
+};
+
+function roundEUR(val: number): number {
+  return Math.round(val * 100) / 100;
+}
+
+function buildMonthlyDateISO(year: number, month: number, day: number): string {
+  const maxDay = new Date(year, month, 0).getDate();
+  const safeDay = Math.max(1, Math.min(day, maxDay));
+  return `${year}-${String(month).padStart(2, '0')}-${String(safeDay).padStart(2, '0')}`;
+}
+
+export function computeCardRechargeCap(
+  saldoActual: number,
+  limiteDisponible: number,
+  recargaMensualImporte: number
+): {
+  margenHastaLimite: number;
+  importeEfectivoRecarga: number;
+  saldoTrasRecarga: number;
+} {
+  if (limiteDisponible <= 0 || recargaMensualImporte <= 0) {
+    return {
+      margenHastaLimite: Math.max(0, roundEUR(limiteDisponible - saldoActual)),
+      importeEfectivoRecarga: 0,
+      saldoTrasRecarga: roundEUR(saldoActual),
+    };
+  }
+  const margenHastaLimite = Math.max(0, roundEUR(limiteDisponible - saldoActual));
+  const importeEfectivoRecarga = roundEUR(
+    Math.min(recargaMensualImporte, margenHastaLimite)
+  );
+  return {
+    margenHastaLimite,
+    importeEfectivoRecarga,
+    saldoTrasRecarga: roundEUR(saldoActual + importeEfectivoRecarga),
+  };
+}
+
+export function getNextPeriodicRechargeDate(
+  fechaPeriodicaISO: string,
+  referenceISO = getReferenceDateISO(),
+  ultimaRecargaYYYYMM?: string
+): string {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(fechaPeriodicaISO)) {
+    return referenceISO;
+  }
+  if (fechaPeriodicaISO > referenceISO) {
+    return fechaPeriodicaISO;
+  }
+  const day = Number(fechaPeriodicaISO.slice(8, 10)) || 1;
+  const [refY, refM] = referenceISO.split('-').map(Number);
+  const currentYM = referenceISO.slice(0, 7);
+  const candidateThisMonth = buildMonthlyDateISO(refY, refM, day);
+
+  if (ultimaRecargaYYYYMM !== currentYM && candidateThisMonth >= referenceISO) {
+    return candidateThisMonth;
+  }
+  if (ultimaRecargaYYYYMM !== currentYM && candidateThisMonth < referenceISO) {
+    return candidateThisMonth;
+  }
+
+  const nextM = refM === 12 ? 1 : refM + 1;
+  const nextY = refM === 12 ? refY + 1 : refY;
+  return buildMonthlyDateISO(nextY, nextM, day);
+}
+
+export interface CardAutoRechargeEvent {
+  accountId: string;
+  accountName: string;
+  amount: number;
+  cappedByLimit: boolean;
+  reason?: string;
+}
+
+export function processDueCardAutoRecharges(
+  state: EconomyWorkspaceState,
+  referenceISO = getReferenceDateISO(),
+  forceAccountId?: string
+): {
+  nextState: EconomyWorkspaceState;
+  appliedCount: number;
+  totalRecharged: number;
+  events: CardAutoRechargeEvent[];
+} {
+  const currentYM = referenceISO.slice(0, 7);
+  const [refY, refM] = referenceISO.split('-').map(Number);
+
+  const initialBalances = computeAccountBalances(state.accounts, state.movements);
+  const runningBalanceById = new Map<string, number>(
+    initialBalances.map((b) => [b.account.id, b.saldoActual])
+  );
+
+  const newMovements: FinancialMovement[] = [];
+  const events: CardAutoRechargeEvent[] = [];
+  let appliedCount = 0;
+  let totalRecharged = 0;
+  let accountsChanged = false;
+
+  const updatedAccounts = state.accounts.map((acc) => {
+    if (!acc.activa || acc.tipo !== 'tarjeta' || !acc.tarjetaConfig) {
+      return acc;
+    }
+    const cfg = acc.tarjetaConfig;
+    const isForced = forceAccountId === acc.id;
+    if (!isForced && (cfg.recargaMensualImporte <= 0 || cfg.limiteDisponible <= 0)) {
+      return acc;
+    }
+
+    const startISO = cfg.fechaPeriodicaRecarga;
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(startISO)) {
+      return acc;
+    }
+
+    const periodicDay = Number(startISO.slice(8, 10)) || 1;
+    const dueDateThisMonth = buildMonthlyDateISO(refY, refM, periodicDay);
+    const isDueBySchedule =
+      startISO <= referenceISO &&
+      dueDateThisMonth <= referenceISO &&
+      cfg.ultimaRecargaYYYYMM !== currentYM;
+
+    if (!isForced && !isDueBySchedule) {
+      return acc;
+    }
+
+    const saldoActual = runningBalanceById.get(acc.id) ?? acc.saldoInicial;
+    const { importeEfectivoRecarga } = computeCardRechargeCap(
+      saldoActual,
+      cfg.limiteDisponible,
+      cfg.recargaMensualImporte
+    );
+
+    const cappedByLimit =
+      importeEfectivoRecarga < cfg.recargaMensualImporte && cfg.recargaMensualImporte > 0;
+
+    if (importeEfectivoRecarga <= 0) {
+      if (isForced) {
+        events.push({
+          accountId: acc.id,
+          accountName: acc.nombre,
+          amount: 0,
+          cappedByLimit: true,
+          reason: `La tarjeta ya alcanza o supera su límite disponible (${cfg.limiteDisponible.toFixed(2)} €).`,
+        });
+      }
+      if (cfg.ultimaRecargaYYYYMM !== currentYM) {
+        accountsChanged = true;
+        return {
+          ...acc,
+          tarjetaConfig: {
+            ...cfg,
+            ultimaRecargaYYYYMM: currentYM,
+          },
+        };
+      }
+      return acc;
+    }
+
+    const sourceAccount = cfg.cuentaOrigenRecargaId
+      ? state.accounts.find(
+          (a) => a.id === cfg.cuentaOrigenRecargaId && a.activa && a.id !== acc.id
+        )
+      : undefined;
+
+    const movementDate = isForced ? referenceISO : dueDateThisMonth;
+    const cardLabel = CARD_SUBTYPE_LABELS[cfg.tipoTarjeta] ?? 'Tarjeta';
+    const mov: FinancialMovement = sourceAccount
+      ? {
+          id: `mov-card-topup-${acc.id}-${currentYM}-${Date.now()}-${Math.floor(Math.random() * 1000)}`,
+          tipo: 'transferencia',
+          importe: importeEfectivoRecarga,
+          fecha: movementDate,
+          concepto: `Recarga automática mensual (${cardLabel}): ${acc.nombre}`,
+          categoriaId: 'cat-finanzas',
+          subcategoria: 'Aportaciones a inversión',
+          cuentaId: sourceAccount.id,
+          cuentaDestinoId: acc.id,
+          miembroId:
+            acc.titularId !== 'familiar'
+              ? acc.titularId
+              : state.actingMemberId,
+          visibilidad: acc.visibilidad,
+          recurrencia: 'puntual',
+          estado: 'confirmado',
+        }
+      : {
+          id: `mov-card-topup-${acc.id}-${currentYM}-${Date.now()}-${Math.floor(Math.random() * 1000)}`,
+          tipo: 'ingreso',
+          importe: importeEfectivoRecarga,
+          fecha: movementDate,
+          concepto: `Recarga automática mensual (${cardLabel}): ${acc.nombre}`,
+          categoriaId: 'cat-ingresos',
+          subcategoria: 'Otros ingresos',
+          cuentaId: acc.id,
+          miembroId:
+            acc.titularId !== 'familiar'
+              ? acc.titularId
+              : state.actingMemberId,
+          visibilidad: acc.visibilidad,
+          recurrencia: 'puntual',
+          estado: 'confirmado',
+        };
+
+    newMovements.push(mov);
+    runningBalanceById.set(acc.id, roundEUR(saldoActual + importeEfectivoRecarga));
+    if (sourceAccount) {
+      runningBalanceById.set(
+        sourceAccount.id,
+        roundEUR((runningBalanceById.get(sourceAccount.id) ?? sourceAccount.saldoInicial) - importeEfectivoRecarga)
+      );
+    }
+
+    appliedCount += 1;
+    totalRecharged = roundEUR(totalRecharged + importeEfectivoRecarga);
+    accountsChanged = true;
+    events.push({
+      accountId: acc.id,
+      accountName: acc.nombre,
+      amount: importeEfectivoRecarga,
+      cappedByLimit,
+    });
+
+    return {
+      ...acc,
+      tarjetaConfig: {
+        ...cfg,
+        ultimaRecargaYYYYMM: currentYM,
+      },
+    };
+  });
+
+  if (!accountsChanged && newMovements.length === 0) {
+    return {
+      nextState: state,
+      appliedCount: 0,
+      totalRecharged: 0,
+      events,
+    };
+  }
+
+  return {
+    nextState: {
+      ...state,
+      accounts: updatedAccounts,
+      movements:
+        newMovements.length > 0
+          ? [...newMovements, ...state.movements]
+          : state.movements,
+    },
+    appliedCount,
+    totalRecharged,
+    events,
+  };
+}
 
 export const SITUACION_LABORAL_LABELS: Record<SituacionLaboral, string> = {
   parado_con_subsidio: 'Parado con subsidio',
@@ -362,11 +763,35 @@ export function computeEconomySummary(
     return true;
   });
 
-  const inRange = (fecha: string, r: PeriodRange) => fecha >= r.start && fecha <= r.end;
+  const prorrateoActivo = Boolean(state.prorratearGastos);
+  const periodMonths = getCalendarMonthsInPeriod(periodRange);
+  const currentMonthKeys = getCalendarMonthsInPeriod(currentMonthRange);
+  const prevMonthKeys = getCalendarMonthsInPeriod(prevMonthRange);
 
-  const visibleMovementsInPeriod = visibleMovements
-    .filter((m) => inRange(m.fecha, periodRange))
-    .sort((a, b) => b.fecha.localeCompare(a.fecha));
+  const effectiveAmountByMovementId: Record<string, ProratedPeriodItem> = {};
+  const visibleMovementsInPeriod: FinancialMovement[] = [];
+  let proratedExpenseCountInPeriod = 0;
+
+  for (const m of visibleMovements) {
+    const eff = getMovementEffectiveAmountForPeriod(
+      m,
+      periodRange,
+      periodMonths,
+      prorrateoActivo
+    );
+    if (!eff.included) continue;
+    visibleMovementsInPeriod.push(m);
+    if (eff.isProrated) proratedExpenseCountInPeriod += 1;
+    effectiveAmountByMovementId[m.id] = {
+      movement: m,
+      effectiveAmount: eff.amount,
+      monthlyShare: eff.isProrated ? m.importe / eff.divisor : m.importe,
+      monthsCovered: eff.monthsCovered,
+      divisor: eff.divisor,
+      isProrated: eff.isProrated,
+    };
+  }
+  visibleMovementsInPeriod.sort((a, b) => b.fecha.localeCompare(a.fecha));
 
   let ingresosPeriodo = 0;
   let gastosPeriodo = 0;
@@ -374,29 +799,31 @@ export function computeEconomySummary(
 
   // IMPORTANTE: Las transferencias entre cuentas propias NO suman ni a ingresos ni a gastos.
   // Las devoluciones minoran el gasto neto de la categoría correspondiente (nunca inflan ingresos).
+  // Cuando prorrateoActivo es true, los gastos trimestrales se imputan ÷3 por mes y los anuales ÷12 por mes.
   const spentByCategory = new Map<string, number>();
 
   for (const m of visibleMovementsInPeriod) {
     if (m.tipo === 'transferencia') continue;
+    const effAmount = effectiveAmountByMovementId[m.id]?.effectiveAmount ?? m.importe;
 
     if (m.tipo === 'ingreso') {
-      ingresosPeriodo += m.importe;
+      ingresosPeriodo += effAmount;
     } else if (m.tipo === 'gasto') {
       if (m.estado === 'confirmado') {
-        gastosPeriodo += m.importe;
+        gastosPeriodo += effAmount;
       } else {
-        gastosPendientesYProximos += m.importe;
-        gastosPeriodo += m.importe;
+        gastosPendientesYProximos += effAmount;
+        gastosPeriodo += effAmount;
       }
       spentByCategory.set(
         m.categoriaId,
-        (spentByCategory.get(m.categoriaId) ?? 0) + m.importe
+        (spentByCategory.get(m.categoriaId) ?? 0) + effAmount
       );
     } else if (m.tipo === 'devolucion') {
-      gastosPeriodo = Math.max(0, gastosPeriodo - m.importe);
+      gastosPeriodo = Math.max(0, gastosPeriodo - effAmount);
       spentByCategory.set(
         m.categoriaId,
-        Math.max(0, (spentByCategory.get(m.categoriaId) ?? 0) - m.importe)
+        Math.max(0, (spentByCategory.get(m.categoriaId) ?? 0) - effAmount)
       );
     }
   }
@@ -413,27 +840,42 @@ export function computeEconomySummary(
 
   for (const m of visibleMovements) {
     if (m.tipo === 'transferencia') continue;
-    if (inRange(m.fecha, currentMonthRange)) {
-      if (m.tipo === 'ingreso') ingCurr += m.importe;
+
+    const currEff = getMovementEffectiveAmountForPeriod(
+      m,
+      currentMonthRange,
+      currentMonthKeys,
+      prorrateoActivo
+    );
+    if (currEff.included) {
+      if (m.tipo === 'ingreso') ingCurr += currEff.amount;
       else if (m.tipo === 'gasto') {
-        gasCurr += m.importe;
-        if (!m.esHipoteca) gasCurrPreHipoteca += m.importe;
+        gasCurr += currEff.amount;
+        if (!m.esHipoteca) gasCurrPreHipoteca += currEff.amount;
         currentMonthSpentByCategory.set(
           m.categoriaId,
-          (currentMonthSpentByCategory.get(m.categoriaId) ?? 0) + m.importe
+          (currentMonthSpentByCategory.get(m.categoriaId) ?? 0) + currEff.amount
         );
       } else if (m.tipo === 'devolucion') {
-        gasCurr = Math.max(0, gasCurr - m.importe);
-        gasCurrPreHipoteca = Math.max(0, gasCurrPreHipoteca - m.importe);
+        gasCurr = Math.max(0, gasCurr - currEff.amount);
+        gasCurrPreHipoteca = Math.max(0, gasCurrPreHipoteca - currEff.amount);
         currentMonthSpentByCategory.set(
           m.categoriaId,
-          Math.max(0, (currentMonthSpentByCategory.get(m.categoriaId) ?? 0) - m.importe)
+          Math.max(0, (currentMonthSpentByCategory.get(m.categoriaId) ?? 0) - currEff.amount)
         );
       }
-    } else if (inRange(m.fecha, prevMonthRange)) {
-      if (m.tipo === 'ingreso') ingPrev += m.importe;
-      else if (m.tipo === 'gasto') gasPrev += m.importe;
-      else if (m.tipo === 'devolucion') gasPrev = Math.max(0, gasPrev - m.importe);
+    }
+
+    const prevEff = getMovementEffectiveAmountForPeriod(
+      m,
+      prevMonthRange,
+      prevMonthKeys,
+      prorrateoActivo
+    );
+    if (prevEff.included) {
+      if (m.tipo === 'ingreso') ingPrev += prevEff.amount;
+      else if (m.tipo === 'gasto') gasPrev += prevEff.amount;
+      else if (m.tipo === 'devolucion') gasPrev = Math.max(0, gasPrev - prevEff.amount);
     }
   }
 
@@ -506,13 +948,16 @@ export function computeEconomySummary(
 
   if (targetLimitedMember && targetLimitedMember.limiteGastoMensual !== undefined) {
     const spentLimited = visibleMovements
-      .filter(
-        (m) =>
-          m.miembroId === targetLimitedMember.id &&
-          m.tipo === 'gasto' &&
-          inRange(m.fecha, currentMonthRange)
-      )
-      .reduce((acc, m) => acc + m.importe, 0);
+      .filter((m) => m.miembroId === targetLimitedMember.id && m.tipo === 'gasto')
+      .reduce((acc, m) => {
+        const eff = getMovementEffectiveAmountForPeriod(
+          m,
+          currentMonthRange,
+          currentMonthKeys,
+          prorrateoActivo
+        );
+        return eff.included ? acc + eff.amount : acc;
+      }, 0);
 
     parentalAlert = {
       memberName: targetLimitedMember.nombre,
@@ -527,10 +972,22 @@ export function computeEconomySummary(
     string,
     { ingresos: number; gastosBrutos: number; devoluciones: number }
   >();
+  const nonProratedMovements: FinancialMovement[] = [];
+  const proratedMovements: FinancialMovement[] = [];
+
   for (const m of visibleMovements) {
     if (m.tipo === 'transferencia') continue;
     const monthKey = m.fecha.slice(0, 7);
     if (!/^\d{4}-\d{2}$/.test(monthKey)) continue;
+    if (prorrateoActivo && isProratableExpense(m)) {
+      proratedMovements.push(m);
+    } else {
+      nonProratedMovements.push(m);
+    }
+  }
+
+  for (const m of nonProratedMovements) {
+    const monthKey = m.fecha.slice(0, 7);
     const bucket = monthlyHistoryTotals.get(monthKey) ?? {
       ingresos: 0,
       gastosBrutos: 0,
@@ -546,9 +1003,35 @@ export function computeEconomySummary(
     monthlyHistoryTotals.set(monthKey, bucket);
   }
 
+  if (monthlyHistoryTotals.size === 0 && proratedMovements.length > 0) {
+    for (const m of proratedMovements) {
+      const monthKey = m.fecha.slice(0, 7);
+      if (!monthlyHistoryTotals.has(monthKey)) {
+        monthlyHistoryTotals.set(monthKey, {
+          ingresos: 0,
+          gastosBrutos: 0,
+          devoluciones: 0,
+        });
+      }
+    }
+  }
+
   const trailingMonthKeys = Array.from(monthlyHistoryTotals.keys())
     .sort((a, b) => a.localeCompare(b))
     .slice(-12);
+
+  for (const m of proratedMovements) {
+    const coverageMonths = getProratedCoverageMonths(m.fecha, m.recurrencia);
+    if (!coverageMonths) continue;
+    const monthlyShare = m.importe / coverageMonths.length;
+    const coverageSet = new Set(coverageMonths);
+    for (const ym of trailingMonthKeys) {
+      if (coverageSet.has(ym)) {
+        const bucket = monthlyHistoryTotals.get(ym)!;
+        bucket.gastosBrutos += monthlyShare;
+      }
+    }
+  }
 
   let histIngresos = 0;
   let histGastosBrutos = 0;
@@ -609,6 +1092,9 @@ export function computeEconomySummary(
 
   return {
     periodRange,
+    prorrateoActivo,
+    proratedExpenseCountInPeriod,
+    effectiveAmountByMovementId,
     ingresosPeriodo,
     gastosPeriodo,
     ahorroNetoPeriodo,

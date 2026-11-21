@@ -2,8 +2,10 @@ import { initializeApp } from 'firebase/app';
 import {
   GoogleAuthProvider,
   User,
+  createUserWithEmailAndPassword,
   getAuth,
   onAuthStateChanged,
+  signInWithEmailAndPassword,
   signInWithPopup,
   signOut,
 } from 'firebase/auth';
@@ -175,6 +177,40 @@ export function formatGoogleAuthError(
     isCancelled: false,
     message: rawMsg || 'No se pudo completar el inicio de sesión con Google.',
   };
+}
+
+export async function emailSignIn(email: string, password: string): Promise<User> {
+  const res = await signInWithEmailAndPassword(auth, email.trim(), password);
+  return res.user;
+}
+
+export async function emailRegister(email: string, password: string): Promise<User> {
+  const res = await createUserWithEmailAndPassword(auth, email.trim(), password);
+  return res.user;
+}
+
+export function formatEmailAuthError(err: unknown): string {
+  const code =
+    typeof err === 'object' && err !== null && 'code' in err
+      ? String((err as { code?: unknown }).code ?? '')
+      : '';
+
+  if (code === 'auth/invalid-credential' || code === 'auth/wrong-password' || code === 'auth/user-not-found') {
+    return 'Correo o contraseña incorrectos.';
+  }
+  if (code === 'auth/email-already-in-use') {
+    return 'Ese correo ya está registrado. Cambia a Iniciar sesión.';
+  }
+  if (code === 'auth/weak-password') {
+    return 'La contraseña debe tener al menos 6 caracteres.';
+  }
+  if (code === 'auth/invalid-email') {
+    return 'Introduce un correo electrónico válido.';
+  }
+  if (code === 'auth/operation-not-allowed') {
+    return 'El acceso con correo/contraseña no está habilitado en este proyecto; utiliza Google o entra directamente al espacio de trabajo.';
+  }
+  return err instanceof Error ? err.message : 'No se pudo completar la autenticación.';
 }
 
 export function getCachedGmailToken(): string | null {

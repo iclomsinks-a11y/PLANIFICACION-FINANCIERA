@@ -30,6 +30,107 @@ function getGeminiClient(): GoogleGenAI | null {
   });
 }
 
+function extractGeminiStatusCode(err: unknown): number {
+  if (typeof err === 'object' && err !== null) {
+    const record = err as { status?: unknown; code?: unknown; message?: unknown };
+    const numeric = Number(record.status ?? record.code);
+    if (numeric >= 400 && numeric < 600) return numeric;
+    const msg = String(record.message ?? '');
+    if (
+      msg.includes('"code":429') ||
+      msg.includes('RESOURCE_EXHAUSTED') ||
+      msg.toLowerCase().includes('quota')
+    ) {
+      return 429;
+    }
+    if (msg.includes('"code":403') || msg.includes('PERMISSION_DENIED')) {
+      return 403;
+    }
+    if (msg.includes('"code":400') || msg.includes('API_KEY_INVALID')) {
+      return 400;
+    }
+    if (msg.includes('"code":404') || msg.includes('NOT_FOUND')) {
+      return 404;
+    }
+  }
+  return 500;
+}
+
+function formatGeminiErrorPayload(err: unknown): {
+  status: number;
+  code: string;
+  error: string;
+} {
+  const status = extractGeminiStatusCode(err);
+  if (status === 429) {
+    return {
+      status: 429,
+      code: 'RESOURCE_EXHAUSTED',
+      error:
+        'Se ha alcanzado temporalmente la cuota o límite de peticiones de la API de Gemini. Espera unos segundos para reintentar o selecciona una clave API con facturación habilitada en Settings > Secrets.',
+    };
+  }
+  if (status === 403 || status === 400) {
+    return {
+      status,
+      code: status === 403 ? 'PERMISSION_DENIED' : 'INVALID_REQUEST',
+      error:
+        'La clave API de Gemini no es válida o no tiene permisos suficientes. Revisa tu configuración en Settings > Secrets.',
+    };
+  }
+  if (status === 404) {
+    return {
+      status: 404,
+      code: 'MODEL_NOT_FOUND',
+      error: 'El modelo de Gemini solicitado no está disponible en este momento.',
+    };
+  }
+  return {
+    status: 500,
+    code: 'UPSTREAM_ERROR',
+    error: err instanceof Error ? err.message : 'Error inesperado al consultar Gemini.',
+  };
+}
+
+function isRetryableGeminiError(err: unknown): boolean {
+  const status = extractGeminiStatusCode(err);
+  return status === 429 || status === 503;
+}
+
+async function sleepMs(ms: number): Promise<void> {
+  await new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function executeWithRetry<T>(fn: () => Promise<T>, maxRetries = 1): Promise<T> {
+  let attempt = 0;
+  while (true) {
+    try {
+      return await fn();
+    } catch (err) {
+      if (attempt < maxRetries && isRetryableGeminiError(err)) {
+        attempt += 1;
+        await sleepMs(750 * attempt);
+        continue;
+      }
+      throw err;
+    }
+  }
+}
+
+function respondGeminiError(
+  res: express.Response,
+  endpoint: string,
+  err: unknown
+): void {
+  const payload = formatGeminiErrorPayload(err);
+  if (payload.status === 429) {
+    console.warn(`[Gemini 429] ${endpoint}: cuota o límite temporal alcanzado`);
+  } else {
+    console.error(`Error ${endpoint}:`, err);
+  }
+  res.status(payload.status).json({ error: payload.error, code: payload.code });
+}
+
 interface SimpleCategory {
   id: string;
   nombre: string;
@@ -149,74 +250,82 @@ Miembros disponibles:
 ${membersText}`
       );
 
-      const response = await ai.models.generateContent({
-        model: MODEL_ID,
-        contents: promptParts,
-        config: {
-          systemInstruction,
-          responseMimeType: 'application/json',
-          responseSchema: {
-            type: Type.OBJECT,
-            properties: {
-              ocrTextoDetectado: {
-                type: Type.STRING,
-                description: 'Resumen breve del texto OCR leído en el ticket o factura si hay imagen',
-              },
-              movements: {
-                type: Type.ARRAY,
-                items: {
-                  type: Type.OBJECT,
-                  properties: {
-                    tipo: {
-                      type: Type.STRING,
-                      enum: ['gasto', 'ingreso', 'transferencia', 'devolucion'],
+      const generateMovementExtraction = (modelId: string) =>
+        ai.models.generateContent({
+          model: modelId,
+          contents: promptParts,
+          config: {
+            systemInstruction,
+            responseMimeType: 'application/json',
+            responseSchema: {
+              type: Type.OBJECT,
+              properties: {
+                ocrTextoDetectado: {
+                  type: Type.STRING,
+                  description:
+                    'Resumen breve del texto OCR leído en el ticket o factura si hay imagen',
+                },
+                movements: {
+                  type: Type.ARRAY,
+                  items: {
+                    type: Type.OBJECT,
+                    properties: {
+                      tipo: {
+                        type: Type.STRING,
+                        enum: ['gasto', 'ingreso', 'transferencia', 'devolucion'],
+                      },
+                      importe: { type: Type.NUMBER },
+                      fecha: { type: Type.STRING, description: 'YYYY-MM-DD' },
+                      concepto: { type: Type.STRING },
+                      emisor: { type: Type.STRING },
+                      categoriaId: { type: Type.STRING },
+                      subcategoria: { type: Type.STRING },
+                      cuentaId: { type: Type.STRING },
+                      miembroId: { type: Type.STRING },
+                      recurrencia: {
+                        type: Type.STRING,
+                        enum: ['puntual', 'mensual', 'trimestral', 'anual'],
+                      },
+                      esDeducibleAutonomo: { type: Type.BOOLEAN },
+                      financiadoSugerido: { type: Type.BOOLEAN },
+                      mensualidadesSugeridas: { type: Type.INTEGER },
+                      confianza: {
+                        type: Type.STRING,
+                        enum: ['alta', 'media', 'baja'],
+                      },
+                      explicacion: { type: Type.STRING },
                     },
-                    importe: { type: Type.NUMBER },
-                    fecha: { type: Type.STRING, description: 'YYYY-MM-DD' },
-                    concepto: { type: Type.STRING },
-                    emisor: { type: Type.STRING },
-                    categoriaId: { type: Type.STRING },
-                    subcategoria: { type: Type.STRING },
-                    cuentaId: { type: Type.STRING },
-                    miembroId: { type: Type.STRING },
-                    recurrencia: {
-                      type: Type.STRING,
-                      enum: ['puntual', 'mensual', 'trimestral', 'anual'],
-                    },
-                    esDeducibleAutonomo: { type: Type.BOOLEAN },
-                    financiadoSugerido: { type: Type.BOOLEAN },
-                    mensualidadesSugeridas: { type: Type.INTEGER },
-                    confianza: {
-                      type: Type.STRING,
-                      enum: ['alta', 'media', 'baja'],
-                    },
-                    explicacion: { type: Type.STRING },
+                    required: [
+                      'tipo',
+                      'importe',
+                      'fecha',
+                      'concepto',
+                      'categoriaId',
+                      'subcategoria',
+                      'recurrencia',
+                      'confianza',
+                      'explicacion',
+                    ],
                   },
-                  required: [
-                    'tipo',
-                    'importe',
-                    'fecha',
-                    'concepto',
-                    'categoriaId',
-                    'subcategoria',
-                    'recurrencia',
-                    'confianza',
-                    'explicacion',
-                  ],
                 },
               },
+              required: ['movements'],
             },
-            required: ['movements'],
           },
-        },
-      });
+        });
+
+      let response;
+      try {
+        response = await executeWithRetry(() => generateMovementExtraction(MODEL_ID), 1);
+      } catch (primaryErr) {
+        if (!isRetryableGeminiError(primaryErr)) throw primaryErr;
+        response = await executeWithRetry(() => generateMovementExtraction(FAST_MODEL_ID), 1);
+      }
 
       const parsed = JSON.parse(response.text || '{"movements":[]}');
       res.json(parsed);
     } catch (err) {
-      const message = err instanceof Error ? err.message : 'Error al procesar con Gemini';
-      console.error('Error /api/gemini/parse-movement:', err);
-      res.status(500).json({ error: message });
+      respondGeminiError(res, '/api/gemini/parse-movement', err);
     }
   });
 
@@ -249,9 +358,10 @@ ${membersText}`
         )
         .join('\n');
 
-      const response = await ai.models.generateContent({
-        model: MODEL_ID,
-        contents: `Analiza este correo electrónico recibido y determina si contiene una factura, recibo bancario o cargo real a pagar/pagado.
+      const generateEmailInvoice = (modelId: string) =>
+        ai.models.generateContent({
+          model: modelId,
+          contents: `Analiza este correo electrónico recibido y determina si contiene una factura, recibo bancario o cargo real a pagar/pagado.
 Remitente: ${body.from ?? ''}
 Asunto: ${body.subject ?? ''}
 Fecha correo: ${body.date ?? ''}
@@ -260,35 +370,50 @@ ${(body.bodyText ?? '').slice(0, 6000)}
 
 Categorías COICOP de gasto disponibles:
 ${categoryCatalogText}`,
-        config: {
-          systemInstruction:
-            'Extrae únicamente facturas/recibos reales (luz, agua, telefonía, compras, seguros, suscripciones, impuestos). Descarta newsletters, publicidad o notificaciones sin importe facturable (esFactura=false).',
-          responseMimeType: 'application/json',
-          responseSchema: {
-            type: Type.OBJECT,
-            properties: {
-              esFactura: { type: Type.BOOLEAN },
-              emisor: { type: Type.STRING },
-              numeroFactura: { type: Type.STRING },
-              importe: { type: Type.NUMBER },
-              fecha: { type: Type.STRING, description: 'YYYY-MM-DD' },
-              concepto: { type: Type.STRING },
-              categoriaId: { type: Type.STRING },
-              subcategoria: { type: Type.STRING },
-              esDeducibleAutonomo: { type: Type.BOOLEAN },
-              resumen: { type: Type.STRING },
+          config: {
+            systemInstruction:
+              'Extrae únicamente facturas/recibos reales (luz, agua, telefonía, compras, seguros, suscripciones, impuestos). Descarta newsletters, publicidad o notificaciones sin importe facturable (esFactura=false).',
+            responseMimeType: 'application/json',
+            responseSchema: {
+              type: Type.OBJECT,
+              properties: {
+                esFactura: { type: Type.BOOLEAN },
+                emisor: { type: Type.STRING },
+                numeroFactura: { type: Type.STRING },
+                importe: { type: Type.NUMBER },
+                fecha: { type: Type.STRING, description: 'YYYY-MM-DD' },
+                concepto: { type: Type.STRING },
+                categoriaId: { type: Type.STRING },
+                subcategoria: { type: Type.STRING },
+                esDeducibleAutonomo: { type: Type.BOOLEAN },
+                resumen: { type: Type.STRING },
+              },
+              required: [
+                'esFactura',
+                'emisor',
+                'importe',
+                'fecha',
+                'concepto',
+                'categoriaId',
+                'subcategoria',
+                'resumen',
+              ],
             },
-            required: ['esFactura', 'emisor', 'importe', 'fecha', 'concepto', 'categoriaId', 'subcategoria', 'resumen'],
           },
-        },
-      });
+        });
+
+      let response;
+      try {
+        response = await executeWithRetry(() => generateEmailInvoice(MODEL_ID), 1);
+      } catch (primaryErr) {
+        if (!isRetryableGeminiError(primaryErr)) throw primaryErr;
+        response = await executeWithRetry(() => generateEmailInvoice(FAST_MODEL_ID), 1);
+      }
 
       const parsed = JSON.parse(response.text || '{"esFactura":false}');
       res.json(parsed);
     } catch (err) {
-      const message = err instanceof Error ? err.message : 'Error analizando factura de correo';
-      console.error('Error /api/gemini/parse-email-invoice:', err);
-      res.status(500).json({ error: message });
+      respondGeminiError(res, '/api/gemini/parse-email-invoice', err);
     }
   });
 
@@ -308,22 +433,29 @@ ${categoryCatalogText}`,
         deterministicSummary?: unknown;
       };
 
-      const response = await ai.models.generateContent({
-        model: MODEL_ID,
-        contents: `Tema: ${body.topic ?? 'Análisis económico y fiscal'}
+      const generateExplanation = (modelId: string) =>
+        ai.models.generateContent({
+          model: modelId,
+          contents: `Tema: ${body.topic ?? 'Análisis económico y fiscal'}
 Resultados exactos calculados por el motor determinista (PROHIBIDO modificar o inventar cifras):
-${JSON.stringify(body.deterministicSummary, null, 2)}`,
-        config: {
-          systemInstruction:
-            'Explica en español claro, directo y estructurado (máximo 4 puntos breves) qué significan estos resultados deterministas para la economía del hogar. Cita exactamente las cifras proporcionadas sin recalcularlas ni inventar datos.',
-        },
-      });
+${JSON.stringify(body.deterministicSummary ?? {})}`,
+          config: {
+            systemInstruction:
+              'Explica en español claro, directo y estructurado (máximo 4 puntos breves) qué significan estos resultados deterministas para la economía del hogar. Cita exactamente las cifras proporcionadas sin recalcularlas ni inventar datos.',
+          },
+        });
+
+      let response;
+      try {
+        response = await executeWithRetry(() => generateExplanation(MODEL_ID), 1);
+      } catch (primaryErr) {
+        if (!isRetryableGeminiError(primaryErr)) throw primaryErr;
+        response = await executeWithRetry(() => generateExplanation(FAST_MODEL_ID), 1);
+      }
 
       res.json({ explanation: response.text ?? '' });
     } catch (err) {
-      const message = err instanceof Error ? err.message : 'Error generando explicación';
-      console.error('Error /api/gemini/explain:', err);
-      res.status(500).json({ error: message });
+      respondGeminiError(res, '/api/gemini/explain', err);
     }
   });
 
@@ -357,7 +489,7 @@ ${JSON.stringify(body.deterministicSummary, null, 2)}`,
       const selectedModel = mode === 'rapido' ? FAST_MODEL_ID : MODEL_ID;
       const enableSearch = selectedModel === MODEL_ID && body.useSearch !== false;
 
-      const contextJson = JSON.stringify(body.financialContext ?? {}, null, 2);
+      const contextJson = JSON.stringify(body.financialContext ?? {});
       const systemInstruction = `Eres un Asesor Fiscal y Economista Colegiado especializado en economía doméstica española, IRPF (Ley 35/2006 AEAT), presupuestos familiares COICOP, tesorería remunerada e hipotecas.
 Tu misión es ANALIZAR y ASESORAR de forma práctica, empática y rigurosa para mejorar la salud financiera del usuario o de su unidad familiar.
 
@@ -371,7 +503,7 @@ REGLAS OBLIGATORIAS:
 DATOS DETERMINISTAS ACTUALES DEL USUARIO (NO ALTERAR):
 ${contextJson}`;
 
-      // Limpiar y asegurar historial alternante empezando por 'user'
+      // Limpiar y asegurar historial alternante empezando por 'user' (últimos 10 turnos para optimizar consumo de tokens)
       const rawHistory = Array.isArray(body.history) ? body.history : [];
       const sanitizedHistory: Content[] = [];
       for (const item of rawHistory) {
@@ -386,31 +518,64 @@ ${contextJson}`;
           sanitizedHistory.push({ role, parts: [{ text: cleanText }] });
         }
       }
-      // Si el último elemento del historial es 'user', quitarlo o fusionar; la API espera terminar en 'model' antes de sendMessage
       if (
         sanitizedHistory.length > 0 &&
         sanitizedHistory[sanitizedHistory.length - 1].role === 'user'
       ) {
         sanitizedHistory.pop();
       }
+      const trimmedHistory = sanitizedHistory.slice(-10);
+      if (trimmedHistory.length > 0 && trimmedHistory[0].role !== 'user') {
+        trimmedHistory.shift();
+      }
 
-      const chatConfig: Record<string, unknown> = {
-        systemInstruction,
+      const sendWithModel = async (
+        modelToUse: string,
+        useSearchTool: boolean,
+        thinkingLevel?: ThinkingLevel
+      ) => {
+        const chatConfig: Record<string, unknown> = {
+          systemInstruction,
+        };
+        if (modelToUse === MODEL_ID) {
+          chatConfig.thinkingConfig = {
+            thinkingLevel: thinkingLevel ?? ThinkingLevel.MEDIUM,
+          };
+          if (useSearchTool) {
+            chatConfig.tools = [{ googleSearch: {} }];
+          }
+        }
+        const chat = ai.chats.create({
+          model: modelToUse,
+          history: trimmedHistory,
+          config: chatConfig,
+        });
+        return chat.sendMessage({ message: userMessage });
       };
-      if (selectedModel === MODEL_ID) {
-        chatConfig.thinkingConfig = { thinkingLevel: ThinkingLevel.HIGH };
-        if (enableSearch) {
-          chatConfig.tools = [{ googleSearch: {} }];
+
+      let modelUsed = selectedModel;
+      let response;
+      try {
+        response = await executeWithRetry(
+          () => sendWithModel(selectedModel, enableSearch, ThinkingLevel.MEDIUM),
+          1
+        );
+      } catch (primaryErr) {
+        if (!isRetryableGeminiError(primaryErr)) throw primaryErr;
+
+        // Respaldo real con otro modelo Gemini disponible si el modelo principal alcanza límite/cuota
+        if (selectedModel === MODEL_ID) {
+          try {
+            modelUsed = FAST_MODEL_ID;
+            response = await executeWithRetry(() => sendWithModel(FAST_MODEL_ID, false), 1);
+          } catch (fallbackErr) {
+            throw fallbackErr;
+          }
+        } else {
+          throw primaryErr;
         }
       }
 
-      const chat = ai.chats.create({
-        model: selectedModel,
-        history: sanitizedHistory,
-        config: chatConfig,
-      });
-
-      const response = await chat.sendMessage({ message: userMessage });
       const groundingChunks =
         response.candidates?.[0]?.groundingMetadata?.groundingChunks ?? [];
       const groundingSources: Array<{ title: string; uri: string }> = [];
@@ -428,13 +593,12 @@ ${contextJson}`;
 
       res.json({
         reply: response.text ?? 'No se pudo generar una respuesta en este momento.',
-        modelUsed: selectedModel,
+        modelUsed,
+        fallbackUsed: modelUsed !== selectedModel,
         groundingSources,
       });
     } catch (err) {
-      const message = err instanceof Error ? err.message : 'Error en el asesor fiscal y económico';
-      console.error('Error /api/gemini/advisor-chat:', err);
-      res.status(500).json({ error: message });
+      respondGeminiError(res, '/api/gemini/advisor-chat', err);
     }
   });
 
@@ -459,28 +623,30 @@ ${contextJson}`;
       const cleanBase64 = rawAudio.includes(',') ? rawAudio.split(',')[1] : rawAudio;
       const mimeType = (body.mimeType ?? 'audio/webm').split(';')[0].trim() || 'audio/webm';
 
-      const response = await ai.models.generateContent({
-        model: TRANSCRIBE_MODEL_ID,
-        contents: {
-          parts: [
-            {
-              inlineData: {
-                mimeType,
-                data: cleanBase64,
-              },
+      const response = await executeWithRetry(
+        () =>
+          ai.models.generateContent({
+            model: TRANSCRIBE_MODEL_ID,
+            contents: {
+              parts: [
+                {
+                  inlineData: {
+                    mimeType,
+                    data: cleanBase64,
+                  },
+                },
+                {
+                  text: 'Transcribe fielmente este audio en español. Mantén con exactitud los importes en euros, porcentajes y términos financieros o fiscales sin añadir explicaciones adicionales.',
+                },
+              ],
             },
-            {
-              text: 'Transcribe fielmente este audio en español. Mantén con exactitud los importes en euros, porcentajes y términos financieros o fiscales sin añadir explicaciones adicionales.',
-            },
-          ],
-        },
-      });
+          }),
+        1
+      );
 
       res.json({ transcript: (response.text ?? '').trim() });
     } catch (err) {
-      const message = err instanceof Error ? err.message : 'Error al transcribir el audio';
-      console.error('Error /api/gemini/transcribe:', err);
-      res.status(500).json({ error: message });
+      respondGeminiError(res, '/api/gemini/transcribe', err);
     }
   });
 

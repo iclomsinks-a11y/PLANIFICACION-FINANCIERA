@@ -1,5 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import {
+  CalendarClock,
   Check,
   FilePlus2,
   GitCompare,
@@ -7,17 +8,21 @@ import {
   Play,
   Plus,
   Save,
-  Scale,
   ScanLine,
   ShieldAlert,
   ShieldCheck,
   Trash2,
   TrendingUp,
 } from 'lucide-react';
-import { EconomySummaryResult, SavingsHealthLevel } from '../engines/economyEngine';
+import {
+  EconomySummaryResult,
+  SavingsHealthLevel,
+  isProratableExpense,
+} from '../engines/economyEngine';
 import {
   EconomyWorkspaceState,
   FinancialMovement,
+  MovementRecurrence,
   MovementType,
   PeriodPreset,
   SavedSupuesto,
@@ -40,6 +45,7 @@ interface OverviewDashboardProps {
   onDeleteSupuesto: (id: string) => void;
   onChangePeriod: (preset: PeriodPreset) => void;
   onChangeCustomRange: (start: string, end: string) => void;
+  onToggleProrratearGastos: () => void;
   onQuickAddMovement: (mov: Omit<FinancialMovement, 'id'>) => void;
   onConfirmMovement: (id: string) => void;
   onNavigate: (
@@ -74,6 +80,7 @@ export const OverviewDashboard: React.FC<OverviewDashboardProps> = ({
   onDeleteSupuesto,
   onChangePeriod,
   onChangeCustomRange,
+  onToggleProrratearGastos,
   onQuickAddMovement,
   onConfirmMovement,
   onNavigate,
@@ -93,8 +100,11 @@ export const OverviewDashboard: React.FC<OverviewDashboardProps> = ({
 
   const [quickType, setQuickType] = useState<MovementType>('gasto');
   const [quickAmount, setQuickAmount] = useState('');
+  const [quickDate, setQuickDate] = useState('2026-11-13');
+  const [quickRecurrence, setQuickRecurrence] = useState<MovementRecurrence>('puntual');
   const [quickConcept, setQuickConcept] = useState('');
   const [quickCategory, setQuickCategory] = useState('cat-alimentacion');
+  const [quickFeedback, setQuickFeedback] = useState<string | null>(null);
   const [quickAccount, setQuickAccount] = useState(
     summary.accountBalances[0]?.account.id ?? state.accounts[0]?.id ?? ''
   );
@@ -138,10 +148,11 @@ export const OverviewDashboard: React.FC<OverviewDashboardProps> = ({
       visibleCategories[0] ??
       state.categories[0];
 
+    const finalDate = quickDate || '2026-11-13';
     onQuickAddMovement({
       tipo: quickType,
       importe: amount,
-      fecha: '2026-11-13',
+      fecha: finalDate,
       concepto: quickConcept.trim(),
       categoriaId: quickType === 'transferencia' ? 'cat-finanzas' : catObj.id,
       subcategoria:
@@ -152,9 +163,24 @@ export const OverviewDashboard: React.FC<OverviewDashboardProps> = ({
       cuentaDestinoId: quickType === 'transferencia' ? effectiveQuickDestAccount : undefined,
       miembroId: state.actingMemberId,
       visibilidad: state.mode === 'familiar' ? 'compartida' : 'privada',
-      recurrencia: 'puntual',
+      recurrencia: quickRecurrence,
       estado: 'confirmado',
     });
+
+    if (
+      quickType === 'gasto' &&
+      (quickRecurrence === 'trimestral' || quickRecurrence === 'anual')
+    ) {
+      const div = quickRecurrence === 'trimestral' ? 3 : 12;
+      setQuickFeedback(
+        summary.prorrateoActivo
+          ? `Gasto registrado (${finalDate}) y prorrateado a ${formatEUR(amount / div)}/mes (÷ ${div}).`
+          : `Gasto registrado (${finalDate}). Activa "Prorratear gastos" para imputar ${formatEUR(amount / div)}/mes (÷ ${div}).`
+      );
+    } else {
+      setQuickFeedback(`Movimiento "${quickConcept.trim()}" registrado para ${finalDate}.`);
+    }
+    window.setTimeout(() => setQuickFeedback(null), 4500);
 
     setQuickAmount('');
     setQuickConcept('');
@@ -315,7 +341,7 @@ export const OverviewDashboard: React.FC<OverviewDashboardProps> = ({
         </div>
       </section>
 
-      {/* Selector de Período */}
+      {/* Selector de Período y Botón Adicional de Prorrateo */}
       <section className="flex flex-wrap items-center justify-between gap-4 rounded-xl border border-slate-200 bg-white px-5 py-3.5 dark:border-slate-800 dark:bg-slate-900">
         <div className="flex flex-wrap items-center gap-1.5">
           {(
@@ -342,27 +368,53 @@ export const OverviewDashboard: React.FC<OverviewDashboardProps> = ({
           ))}
         </div>
 
-        {periodPreset === 'personalizado' ? (
-          <div className="flex items-center gap-2">
-            <input
-              type="date"
-              value={customStart}
-              onChange={(e) => onChangeCustomRange(e.target.value, customEnd)}
-              className="rounded-lg border border-slate-300 bg-white px-2.5 py-1.5 font-mono text-sm dark:border-slate-700 dark:bg-slate-800 dark:text-white"
-            />
-            <span className="text-slate-400">–</span>
-            <input
-              type="date"
-              value={customEnd}
-              onChange={(e) => onChangeCustomRange(customStart, e.target.value)}
-              className="rounded-lg border border-slate-300 bg-white px-2.5 py-1.5 font-mono text-sm dark:border-slate-700 dark:bg-slate-800 dark:text-white"
-            />
-          </div>
-        ) : (
-          <span className="text-sm font-medium text-slate-500 dark:text-slate-400">
-            Período activo: {summary.periodRange.label}
-          </span>
-        )}
+        <div className="flex flex-wrap items-center gap-3">
+          <button
+            type="button"
+            onClick={onToggleProrratearGastos}
+            aria-pressed={summary.prorrateoActivo}
+            title="Divide los gastos trimestrales entre 3 y los anuales entre 12 para repartir IBI, seguros o agua entre sus meses correspondientes"
+            className={`inline-flex items-center gap-2 rounded-lg border px-3.5 py-2 text-sm font-semibold transition-colors whitespace-nowrap shrink-0 ${
+              summary.prorrateoActivo
+                ? 'border-blue-700 bg-blue-700 text-white hover:bg-blue-800 dark:border-blue-500 dark:bg-blue-600'
+                : 'border-slate-300 bg-white text-slate-700 hover:bg-slate-50 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-200 dark:hover:bg-slate-700'
+            }`}
+          >
+            <CalendarClock className="h-4 w-4" />
+            Prorratear gastos
+            <span
+              className={`rounded px-1.5 py-0.5 font-mono text-xs font-bold ${
+                summary.prorrateoActivo
+                  ? 'bg-white/20 text-white'
+                  : 'bg-slate-100 text-slate-600 dark:bg-slate-700 dark:text-slate-300'
+              }`}
+            >
+              {summary.prorrateoActivo ? 'ON · ÷3 / ÷12' : 'OFF'}
+            </span>
+          </button>
+
+          {periodPreset === 'personalizado' ? (
+            <div className="flex items-center gap-2">
+              <input
+                type="date"
+                value={customStart}
+                onChange={(e) => onChangeCustomRange(e.target.value, customEnd)}
+                className="rounded-lg border border-slate-300 bg-white px-2.5 py-1.5 font-mono text-sm dark:border-slate-700 dark:bg-slate-800 dark:text-white"
+              />
+              <span className="text-slate-400">–</span>
+              <input
+                type="date"
+                value={customEnd}
+                onChange={(e) => onChangeCustomRange(customStart, e.target.value)}
+                className="rounded-lg border border-slate-300 bg-white px-2.5 py-1.5 font-mono text-sm dark:border-slate-700 dark:bg-slate-800 dark:text-white"
+              />
+            </div>
+          ) : (
+            <span className="text-sm font-medium text-slate-500 dark:text-slate-400">
+              Período activo: {summary.periodRange.label}
+            </span>
+          )}
+        </div>
       </section>
 
       {/* Aviso de Nuevas Facturas Detectadas en Gmail */}
@@ -466,9 +518,16 @@ export const OverviewDashboard: React.FC<OverviewDashboardProps> = ({
         </div>
 
         <div className="rounded-xl border border-slate-200 bg-white p-5 dark:border-slate-800 dark:bg-slate-900">
-          <p className="text-sm font-medium text-slate-600 dark:text-slate-400">
-            Gastos del Período
-          </p>
+          <div className="flex items-center justify-between gap-2">
+            <p className="text-sm font-medium text-slate-600 dark:text-slate-400">
+              Gastos del Período
+            </p>
+            {summary.prorrateoActivo && (
+              <span className="rounded border border-blue-200 bg-blue-50 px-1.5 py-0.5 text-[11px] font-semibold text-blue-800 dark:border-blue-800 dark:bg-blue-950/40 dark:text-blue-300">
+                Prorrateado ÷3 / ÷12
+              </span>
+            )}
+          </div>
           <p className="mt-2 font-mono text-3xl font-bold tracking-tight text-red-700 tabular-nums lg:text-4xl dark:text-red-400">
             {formatEUR(summary.gastosPeriodo)}
           </p>
@@ -662,14 +721,6 @@ export const OverviewDashboard: React.FC<OverviewDashboardProps> = ({
           <div className="flex flex-wrap items-center gap-2">
             <button
               type="button"
-              onClick={() => onNavigate('asesor')}
-              className="inline-flex items-center gap-1.5 rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-1.5 text-sm font-semibold text-emerald-800 hover:bg-emerald-100 whitespace-nowrap dark:border-emerald-800 dark:bg-emerald-950/40 dark:text-emerald-300"
-            >
-              <Scale className="h-4 w-4" />
-              Asesor Fiscal y Económico
-            </button>
-            <button
-              type="button"
               onClick={() => onOpenGeminiAssistant('ocr')}
               className="inline-flex items-center gap-1.5 rounded-lg border border-blue-200 bg-blue-50 px-3 py-1.5 text-sm font-semibold text-blue-800 hover:bg-blue-100 whitespace-nowrap dark:border-blue-800 dark:bg-blue-950/40 dark:text-blue-300"
             >
@@ -731,24 +782,35 @@ export const OverviewDashboard: React.FC<OverviewDashboardProps> = ({
             />
           </div>
 
-          <div className="lg:col-span-3">
+          <div className="lg:col-span-2">
+            <input
+              type="date"
+              required
+              value={quickDate}
+              onChange={(e) => setQuickDate(e.target.value)}
+              aria-label="Fecha específica del movimiento"
+              className="w-full rounded-lg border border-slate-300 bg-white px-2.5 py-2.5 font-mono text-sm dark:border-slate-700 dark:bg-slate-800 dark:text-white"
+            />
+          </div>
+
+          <div className="lg:col-span-2">
             <input
               type="text"
               required
               value={quickConcept}
               onChange={(e) => setQuickConcept(e.target.value)}
-              placeholder="Concepto (ej. Supermercado, recibo luz...)"
+              placeholder="Concepto (IBI, agua, seguro...)"
               className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2.5 text-base dark:border-slate-700 dark:bg-slate-800 dark:text-white"
             />
           </div>
 
           {quickType === 'transferencia' ? (
-            <div className="lg:col-span-3 grid grid-cols-2 gap-2">
+            <div className="lg:col-span-2 grid grid-cols-2 gap-2">
               <select
                 value={effectiveQuickAccount}
                 onChange={(e) => setQuickAccount(e.target.value)}
                 aria-label="Cuenta origen"
-                className="w-full rounded-lg border border-slate-300 bg-white px-2.5 py-2.5 text-sm dark:border-slate-700 dark:bg-slate-800 dark:text-white"
+                className="w-full rounded-lg border border-slate-300 bg-white px-2 py-2.5 text-sm dark:border-slate-700 dark:bg-slate-800 dark:text-white"
               >
                 {summary.accountBalances.map((b) => (
                   <option key={b.account.id} value={b.account.id}>
@@ -760,7 +822,7 @@ export const OverviewDashboard: React.FC<OverviewDashboardProps> = ({
                 value={effectiveQuickDestAccount}
                 onChange={(e) => setQuickDestAccount(e.target.value)}
                 aria-label="Cuenta destino"
-                className="w-full rounded-lg border border-slate-300 bg-white px-2.5 py-2.5 text-sm dark:border-slate-700 dark:bg-slate-800 dark:text-white"
+                className="w-full rounded-lg border border-slate-300 bg-white px-2 py-2.5 text-sm dark:border-slate-700 dark:bg-slate-800 dark:text-white"
               >
                 {summary.accountBalances.map((b) => (
                   <option key={b.account.id} value={b.account.id}>
@@ -770,12 +832,12 @@ export const OverviewDashboard: React.FC<OverviewDashboardProps> = ({
               </select>
             </div>
           ) : (
-            <div className="lg:col-span-3 grid grid-cols-2 gap-2">
+            <div className="lg:col-span-2 grid grid-cols-2 gap-2">
               <select
                 value={quickCategory}
                 onChange={(e) => setQuickCategory(e.target.value)}
                 aria-label="Categoría"
-                className="w-full rounded-lg border border-slate-300 bg-white px-2.5 py-2.5 text-sm dark:border-slate-700 dark:bg-slate-800 dark:text-white"
+                className="w-full rounded-lg border border-slate-300 bg-white px-2 py-2.5 text-sm dark:border-slate-700 dark:bg-slate-800 dark:text-white"
               >
                 {visibleCategories.map((c) => (
                   <option key={c.id} value={c.id}>
@@ -784,10 +846,26 @@ export const OverviewDashboard: React.FC<OverviewDashboardProps> = ({
                 ))}
               </select>
               <select
+                value={quickRecurrence}
+                onChange={(e) => setQuickRecurrence(e.target.value as MovementRecurrence)}
+                aria-label="Periodicidad"
+                className="w-full rounded-lg border border-slate-300 bg-white px-2 py-2.5 text-sm dark:border-slate-700 dark:bg-slate-800 dark:text-white"
+              >
+                <option value="puntual">Puntual</option>
+                <option value="mensual">Mensual</option>
+                <option value="trimestral">Trimestral (÷3)</option>
+                <option value="anual">Anual (÷12)</option>
+              </select>
+            </div>
+          )}
+
+          <div className="lg:col-span-2 flex gap-2">
+            {quickType !== 'transferencia' && (
+              <select
                 value={effectiveQuickAccount}
                 onChange={(e) => setQuickAccount(e.target.value)}
                 aria-label="Cuenta"
-                className="w-full rounded-lg border border-slate-300 bg-white px-2.5 py-2.5 text-sm dark:border-slate-700 dark:bg-slate-800 dark:text-white"
+                className="w-1/2 rounded-lg border border-slate-300 bg-white px-2 py-2.5 text-sm dark:border-slate-700 dark:bg-slate-800 dark:text-white"
               >
                 {summary.accountBalances.map((b) => (
                   <option key={b.account.id} value={b.account.id}>
@@ -795,19 +873,59 @@ export const OverviewDashboard: React.FC<OverviewDashboardProps> = ({
                   </option>
                 ))}
               </select>
-            </div>
-          )}
-
-          <div className="lg:col-span-2">
+            )}
             <button
               type="submit"
-              className="inline-flex w-full items-center justify-center gap-2 rounded-lg bg-blue-700 px-4 py-2.5 text-base font-semibold text-white transition-colors hover:bg-blue-800 whitespace-nowrap"
+              className={`inline-flex items-center justify-center gap-1.5 rounded-lg bg-blue-700 px-3 py-2.5 text-sm font-semibold text-white transition-colors hover:bg-blue-800 whitespace-nowrap ${
+                quickType === 'transferencia' ? 'w-full' : 'w-1/2'
+              }`}
             >
               <Plus className="h-4 w-4" />
               Guardar
             </button>
           </div>
         </form>
+
+        {quickType === 'gasto' &&
+          (quickRecurrence === 'trimestral' || quickRecurrence === 'anual') && (
+            <div className="mt-3 flex flex-wrap items-center justify-between gap-2 rounded-lg border border-blue-200 bg-blue-50/70 px-3.5 py-2 text-xs text-blue-900 dark:border-blue-900/70 dark:bg-blue-950/30 dark:text-blue-200">
+              <span>
+                {quickRecurrence === 'trimestral'
+                  ? 'Gasto trimestral (ej. agua hogar): se divide entre 3 meses'
+                  : 'Gasto anual (ej. IBI o seguros): se divide entre 12 meses'}
+                {Number(quickAmount) > 0 && (
+                  <>
+                    {' '}
+                    →{' '}
+                    <strong className="font-mono">
+                      {formatEUR(
+                        Number(quickAmount) / (quickRecurrence === 'trimestral' ? 3 : 12)
+                      )}
+                      /mes
+                    </strong>
+                  </>
+                )}
+                {summary.prorrateoActivo
+                  ? ' · Prorrateo activado.'
+                  : ' · Prorrateo desactivado (se imputará íntegro a la fecha).'}
+              </span>
+              {!summary.prorrateoActivo && (
+                <button
+                  type="button"
+                  onClick={onToggleProrratearGastos}
+                  className="rounded-md bg-blue-700 px-2.5 py-1 font-semibold text-white hover:bg-blue-800"
+                >
+                  Activar Prorratear gastos
+                </button>
+              )}
+            </div>
+          )}
+
+        {quickFeedback && (
+          <p className="mt-2.5 text-sm font-medium text-emerald-700 dark:text-emerald-400">
+            {quickFeedback}
+          </p>
+        )}
       </section>
 
       {/* Bloque Central en 2 Columnas Limpias */}
@@ -815,10 +933,17 @@ export const OverviewDashboard: React.FC<OverviewDashboardProps> = ({
         {/* Columna Izquierda: Presupuestos + Próximos Recibos */}
         <div className="space-y-6">
           <section className="rounded-xl border border-slate-200 bg-white p-6 dark:border-slate-800 dark:bg-slate-900">
-            <div className="flex items-center justify-between border-b border-slate-200 pb-3 dark:border-slate-800">
-              <h3 className="text-lg font-bold text-slate-900 dark:text-white">
-                Presupuesto Mensual por Categoría
-              </h3>
+            <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-200 pb-3 dark:border-slate-800">
+              <div>
+                <h3 className="text-lg font-bold text-slate-900 dark:text-white">
+                  Presupuesto Mensual por Categoría
+                </h3>
+                {summary.prorrateoActivo && (
+                  <p className="text-xs text-blue-700 dark:text-blue-400">
+                    Incluye parte proporcional de gastos trimestrales (÷ 3) y anuales (÷ 12)
+                  </p>
+                )}
+              </div>
               <button
                 type="button"
                 onClick={() => onNavigate('cuentas')}
@@ -1006,38 +1131,49 @@ export const OverviewDashboard: React.FC<OverviewDashboardProps> = ({
             </div>
 
             <div className="mt-3 divide-y divide-slate-200 dark:divide-slate-800">
-              {summary.visibleMovementsInPeriod.slice(0, 6).map((m) => (
-                <div
-                  key={m.id}
-                  className="flex items-center justify-between gap-3 py-3 text-base"
-                >
-                  <div>
-                    <p className="font-medium text-slate-900 dark:text-white">{m.concepto}</p>
-                    <p className="text-sm text-slate-500 dark:text-slate-400">
-                      {m.fecha} ·{' '}
-                      {m.tipo === 'transferencia'
-                        ? 'Transferencia interna'
-                        : getCategoryName(m.categoriaId)}
-                    </p>
-                  </div>
-                  <span
-                    className={`font-mono text-base font-bold tabular-nums whitespace-nowrap ${
-                      m.tipo === 'ingreso' || m.tipo === 'devolucion'
-                        ? 'text-emerald-700 dark:text-emerald-400'
-                        : m.tipo === 'transferencia'
-                          ? 'text-blue-700 dark:text-blue-400'
-                          : 'text-red-700 dark:text-red-400'
-                    }`}
+              {summary.visibleMovementsInPeriod.slice(0, 6).map((m) => {
+                const effItem = summary.effectiveAmountByMovementId[m.id];
+                const displayAmount = effItem ? effItem.effectiveAmount : m.importe;
+                const showProrationNote =
+                  effItem?.isProrated && isProratableExpense(m);
+                return (
+                  <div
+                    key={m.id}
+                    className="flex items-center justify-between gap-3 py-3 text-base"
                   >
-                    {m.tipo === 'ingreso' || m.tipo === 'devolucion'
-                      ? '+'
-                      : m.tipo === 'transferencia'
-                        ? '⇄ '
-                        : '-'}
-                    {formatEUR(m.importe)}
-                  </span>
-                </div>
-              ))}
+                    <div>
+                      <p className="font-medium text-slate-900 dark:text-white">{m.concepto}</p>
+                      <p className="text-sm text-slate-500 dark:text-slate-400">
+                        {m.fecha} ·{' '}
+                        {m.tipo === 'transferencia'
+                          ? 'Transferencia interna'
+                          : getCategoryName(m.categoriaId)}
+                        {showProrationNote && (
+                          <span className="ml-1.5 font-medium text-blue-700 dark:text-blue-400">
+                            · Prorrateado ÷ {effItem.divisor} (recibo {formatEUR(m.importe)})
+                          </span>
+                        )}
+                      </p>
+                    </div>
+                    <span
+                      className={`font-mono text-base font-bold tabular-nums whitespace-nowrap ${
+                        m.tipo === 'ingreso' || m.tipo === 'devolucion'
+                          ? 'text-emerald-700 dark:text-emerald-400'
+                          : m.tipo === 'transferencia'
+                            ? 'text-blue-700 dark:text-blue-400'
+                            : 'text-red-700 dark:text-red-400'
+                      }`}
+                    >
+                      {m.tipo === 'ingreso' || m.tipo === 'devolucion'
+                        ? '+'
+                        : m.tipo === 'transferencia'
+                          ? '⇄ '
+                          : '-'}
+                      {formatEUR(displayAmount)}
+                    </span>
+                  </div>
+                );
+              })}
             </div>
           </section>
         </div>

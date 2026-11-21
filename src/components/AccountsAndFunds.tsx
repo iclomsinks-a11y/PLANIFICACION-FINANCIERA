@@ -3,10 +3,12 @@ import {
   AlertTriangle,
   ArrowRightLeft,
   CheckCircle2,
+  CreditCard,
   Eye,
   EyeOff,
   Lock,
   Plus,
+  RefreshCw,
   Shield,
   ShieldCheck,
   Target,
@@ -14,13 +16,18 @@ import {
 } from 'lucide-react';
 import {
   ACCOUNT_TYPE_LABELS,
+  CARD_SUBTYPE_LABELS,
   CategoryBudgetStatus,
   EconomySummaryResult,
   SITUACION_LABORAL_LABELS,
   authorizeFamilyMemberByEmail,
+  computeCardRechargeCap,
+  getNextPeriodicRechargeDate,
+  getReferenceDateISO,
 } from '../engines/economyEngine';
 import {
   AccountType,
+  CardSubtype,
   CategoryConfig,
   EconomyWorkspaceState,
   FinancialAccount,
@@ -40,6 +47,7 @@ interface AccountsAndFundsProps {
   onUpdateCategories: (categories: CategoryConfig[]) => void;
   onUpdateMembers: (members: HouseholdMember[]) => void;
   onAddMovement: (mov: Omit<FinancialMovement, 'id'>) => void;
+  onTriggerCardRecharge?: (accountId: string) => void;
 }
 
 const ROLE_LABELS: Record<MemberRole, string> = {
@@ -66,10 +74,18 @@ export const AccountsAndFunds: React.FC<AccountsAndFundsProps> = ({
   onUpdateCategories,
   onUpdateMembers,
   onAddMovement,
+  onTriggerCardRecharge,
 }) => {
-  // Nueva Cuenta
+  // Nueva Cuenta y Configuración de Tarjetas
   const [accName, setAccName] = useState('');
   const [accType, setAccType] = useState<AccountType>('corriente');
+  const [cardSubtype, setCardSubtype] = useState<CardSubtype>('debito');
+  const [cardLimit, setCardLimit] = useState('500');
+  const [cardMonthlyRecharge, setCardMonthlyRecharge] = useState('150');
+  const [cardRechargeDate, setCardRechargeDate] = useState('2026-12-01');
+  const [cardSourceAccountId, setCardSourceAccountId] = useState('');
+  const [editingCardId, setEditingCardId] = useState<string | null>(null);
+  const [cardRechargeNotice, setCardRechargeNotice] = useState<string | null>(null);
   const [accOwner, setAccOwner] = useState('familiar');
   const [accVisibility, setAccVisibility] = useState<'compartida' | 'privada'>('compartida');
   const [accBalance, setAccBalance] = useState('0');
@@ -135,21 +151,48 @@ export const AccountsAndFunds: React.FC<AccountsAndFundsProps> = ({
   const handleAddAccount = (e: React.FormEvent) => {
     e.preventDefault();
     if (!accName.trim()) return;
+    const saldoInicial = Number(accBalance) || 0;
     const next: FinancialAccount = {
       id: `acc-${Date.now()}`,
       nombre: accName.trim(),
       tipo: accType,
       titularId: accOwner,
       visibilidad: accVisibility,
-      saldoInicial: Number(accBalance) || 0,
-      taePct: Number(accTae) || 0,
+      saldoInicial,
+      taePct: accType === 'tarjeta' ? 0 : Number(accTae) || 0,
       activa: true,
+      ...(accType === 'tarjeta'
+        ? {
+            tarjetaConfig: {
+              tipoTarjeta: cardSubtype,
+              limiteDisponible: Math.max(0, Number(cardLimit) || 0),
+              recargaMensualImporte: Math.max(0, Number(cardMonthlyRecharge) || 0),
+              fechaPeriodicaRecarga: cardRechargeDate || getReferenceDateISO(),
+              cuentaOrigenRecargaId: cardSourceAccountId || undefined,
+            },
+          }
+        : {}),
     };
     onUpdateAccounts([...state.accounts, next]);
     setAccName('');
     setAccBalance('0');
     setAccTae('0');
+    if (accType === 'tarjeta') {
+      setCardRechargeNotice(
+        `Tarjeta (${CARD_SUBTYPE_LABELS[cardSubtype]}) añadida con límite ${formatEUR(next.tarjetaConfig?.limiteDisponible ?? 0)} y recarga mensual de hasta ${formatEUR(next.tarjetaConfig?.recargaMensualImporte ?? 0)} (tope en límite disponible).`
+      );
+    }
   };
+
+  const nonCardActiveAccounts = state.accounts.filter(
+    (a) => a.activa && a.tipo !== 'tarjeta'
+  );
+
+  const newCardCapPreview = computeCardRechargeCap(
+    Number(accBalance) || 0,
+    Math.max(0, Number(cardLimit) || 0),
+    Math.max(0, Number(cardMonthlyRecharge) || 0)
+  );
 
   const handleAddGoal = (e: React.FormEvent) => {
     e.preventDefault();
@@ -332,156 +375,493 @@ export const AccountsAndFunds: React.FC<AccountsAndFundsProps> = ({
             <tbody className="divide-y divide-slate-200 dark:divide-slate-800">
               {state.accounts.map((acc) => {
                 const saldo = balanceByAccountId.get(acc.id);
+                const cardCfg = acc.tipo === 'tarjeta' ? acc.tarjetaConfig : undefined;
+                const effectiveBalance = saldo ?? acc.saldoInicial;
+                const cardCap = cardCfg
+                  ? computeCardRechargeCap(
+                      effectiveBalance,
+                      cardCfg.limiteDisponible,
+                      cardCfg.recargaMensualImporte
+                    )
+                  : null;
+                const nextRechargeDate = cardCfg?.fechaPeriodicaRecarga
+                  ? getNextPeriodicRechargeDate(
+                      cardCfg.fechaPeriodicaRecarga,
+                      getReferenceDateISO(),
+                      cardCfg.ultimaRecargaYYYYMM
+                    )
+                  : null;
+                const isEditingCard = editingCardId === acc.id;
+
                 return (
-                  <tr key={acc.id}>
-                    <td className="py-3.5 pr-4 font-semibold text-slate-900 dark:text-white">
-                      {acc.nombre}
-                    </td>
-                    <td className="px-3 py-3.5 text-slate-600 dark:text-slate-300">
-                      {ACCOUNT_TYPE_LABELS[acc.tipo]}
-                    </td>
-                    <td className="px-3 py-3.5">
-                      <select
-                        value={acc.visibilidad}
-                        onChange={(e) =>
-                          onUpdateAccounts(
-                            state.accounts.map((item) =>
-                              item.id === acc.id
-                                ? {
-                                    ...item,
-                                    visibilidad: e.target.value as 'compartida' | 'privada',
+                  <React.Fragment key={acc.id}>
+                    <tr>
+                      <td className="py-3.5 pr-4 font-semibold text-slate-900 dark:text-white">
+                        <div>{acc.nombre}</div>
+                        {acc.tipo === 'tarjeta' && cardCfg && (
+                          <p className="mt-0.5 text-xs font-normal text-slate-500 dark:text-slate-400">
+                            Límite: <span className="font-mono tabular-nums">{formatEUR(cardCfg.limiteDisponible)}</span>
+                            {' · '}
+                            Recarga: <span className="font-mono tabular-nums">{formatEUR(cardCfg.recargaMensualImporte)}</span>/mes
+                            {nextRechargeDate ? ` · Próx: ${nextRechargeDate}` : ''}
+                            {cardCap && cardCfg.recargaMensualImporte > 0 && cardCfg.limiteDisponible > 0
+                              ? ` (recarga real: ${formatEUR(cardCap.importeEfectivoRecarga)})`
+                              : ''}
+                          </p>
+                        )}
+                      </td>
+                      <td className="px-3 py-3.5 text-slate-600 dark:text-slate-300">
+                        {acc.tipo === 'tarjeta' && cardCfg
+                          ? `Tarjeta · ${CARD_SUBTYPE_LABELS[cardCfg.tipoTarjeta]}`
+                          : ACCOUNT_TYPE_LABELS[acc.tipo]}
+                      </td>
+                      <td className="px-3 py-3.5">
+                        <select
+                          value={acc.visibilidad}
+                          onChange={(e) =>
+                            onUpdateAccounts(
+                              state.accounts.map((item) =>
+                                item.id === acc.id
+                                  ? {
+                                      ...item,
+                                      visibilidad: e.target.value as 'compartida' | 'privada',
+                                    }
+                                  : item
+                              )
+                            )
+                          }
+                          className="rounded-lg border border-slate-300 bg-white px-2.5 py-1.5 text-sm dark:border-slate-700 dark:bg-slate-800 dark:text-white"
+                        >
+                          <option value="compartida">Compartida</option>
+                          <option value="privada">Privada</option>
+                        </select>
+                      </td>
+                      <td className="px-3 py-3.5 text-right font-mono tabular-nums">
+                        {acc.taePct.toFixed(2)}%
+                      </td>
+                      <td className="px-3 py-3.5 text-right">
+                        <input
+                          type="number"
+                          step="10"
+                          value={acc.saldoInicial}
+                          onChange={(e) =>
+                            onUpdateAccounts(
+                              state.accounts.map((item) =>
+                                item.id === acc.id
+                                  ? { ...item, saldoInicial: Number(e.target.value) || 0 }
+                                  : item
+                              )
+                            )
+                          }
+                          className="w-32 rounded-lg border border-slate-300 bg-white px-2.5 py-1.5 text-right font-mono text-base tabular-nums dark:border-slate-700 dark:bg-slate-800 dark:text-white"
+                        />
+                      </td>
+                      <td className="py-3.5 pl-3 text-right font-mono text-lg font-bold text-slate-900 tabular-nums dark:text-white">
+                        {saldo !== undefined ? formatEUR(saldo) : 'Oculta'}
+                      </td>
+                      <td className="py-3.5 pl-4 text-right">
+                        <div className="inline-flex items-center justify-end gap-1.5">
+                          {acc.tipo === 'tarjeta' && (
+                            <>
+                              <button
+                                type="button"
+                                onClick={() =>
+                                  setEditingCardId(isEditingCard ? null : acc.id)
+                                }
+                                className="rounded-lg border border-slate-300 px-2.5 py-1.5 text-xs font-semibold text-slate-700 hover:bg-slate-100 dark:border-slate-700 dark:text-slate-200 dark:hover:bg-slate-800"
+                              >
+                                {isEditingCard ? 'Cerrar' : 'Configurar'}
+                              </button>
+                              {onTriggerCardRecharge &&
+                                cardCfg &&
+                                cardCfg.recargaMensualImporte > 0 &&
+                                cardCfg.limiteDisponible > 0 && (
+                                  <button
+                                    type="button"
+                                    onClick={() => {
+                                      onTriggerCardRecharge(acc.id);
+                                      setCardRechargeNotice(
+                                        cardCap && cardCap.importeEfectivoRecarga > 0
+                                          ? `Recarga aplicada a ${acc.nombre}: +${formatEUR(cardCap.importeEfectivoRecarga)} (tope en límite ${formatEUR(cardCfg.limiteDisponible)}).`
+                                          : `${acc.nombre} ya alcanza el límite disponible (${formatEUR(cardCfg.limiteDisponible)}); no se recarga.`
+                                      );
+                                    }}
+                                    title="Aplicar recarga mensual hasta el límite disponible"
+                                    className="inline-flex items-center gap-1 rounded-lg border border-blue-200 bg-blue-50 px-2.5 py-1.5 text-xs font-semibold text-blue-800 hover:bg-blue-100 dark:border-blue-800 dark:bg-blue-950/40 dark:text-blue-300"
+                                  >
+                                    <RefreshCw className="h-3 w-3" />
+                                    Recargar
+                                  </button>
+                                )}
+                            </>
+                          )}
+                          <button
+                            type="button"
+                            onClick={() =>
+                              onUpdateAccounts(
+                                state.accounts.map((item) =>
+                                  item.id === acc.id ? { ...item, activa: !item.activa } : item
+                                )
+                              )
+                            }
+                            className={`rounded-lg px-3 py-1.5 text-sm font-semibold ${
+                              acc.activa
+                                ? 'bg-emerald-50 text-emerald-800 dark:bg-emerald-950/40 dark:text-emerald-300'
+                                : 'bg-slate-100 text-slate-600 dark:bg-slate-800 dark:text-slate-400'
+                            }`}
+                          >
+                            {acc.activa ? 'Activa' : 'Inactiva'}
+                          </button>
+                        </div>
+                      </td>
+                    </tr>
+
+                    {acc.tipo === 'tarjeta' && isEditingCard && (() => {
+                      const cfg = acc.tarjetaConfig ?? {
+                        tipoTarjeta: 'debito' as CardSubtype,
+                        limiteDisponible: 500,
+                        recargaMensualImporte: 0,
+                        fechaPeriodicaRecarga: getReferenceDateISO(),
+                      };
+                      const updateCfg = (patch: Partial<NonNullable<FinancialAccount['tarjetaConfig']>>) => {
+                        onUpdateAccounts(
+                          state.accounts.map((item) =>
+                            item.id === acc.id
+                              ? {
+                                  ...item,
+                                  tarjetaConfig: {
+                                    ...cfg,
+                                    ...patch,
+                                  },
+                                }
+                              : item
+                          )
+                        );
+                      };
+                      const editCap = computeCardRechargeCap(
+                        effectiveBalance,
+                        cfg.limiteDisponible,
+                        cfg.recargaMensualImporte
+                      );
+
+                      return (
+                        <tr className="bg-slate-50/80 dark:bg-slate-800/40">
+                          <td colSpan={7} className="px-4 py-4">
+                            <div className="grid grid-cols-1 gap-3 md:grid-cols-5">
+                              <label className="space-y-1 text-xs font-semibold text-slate-700 dark:text-slate-300">
+                                <span>Tipo de tarjeta</span>
+                                <select
+                                  value={cfg.tipoTarjeta}
+                                  onChange={(e) =>
+                                    updateCfg({ tipoTarjeta: e.target.value as CardSubtype })
                                   }
-                                : item
-                            )
-                          )
-                        }
-                        className="rounded-lg border border-slate-300 bg-white px-2.5 py-1.5 text-sm dark:border-slate-700 dark:bg-slate-800 dark:text-white"
-                      >
-                        <option value="compartida">Compartida</option>
-                        <option value="privada">Privada</option>
-                      </select>
-                    </td>
-                    <td className="px-3 py-3.5 text-right font-mono tabular-nums">
-                      {acc.taePct.toFixed(2)}%
-                    </td>
-                    <td className="px-3 py-3.5 text-right">
-                      <input
-                        type="number"
-                        step="10"
-                        value={acc.saldoInicial}
-                        onChange={(e) =>
-                          onUpdateAccounts(
-                            state.accounts.map((item) =>
-                              item.id === acc.id
-                                ? { ...item, saldoInicial: Number(e.target.value) || 0 }
-                                : item
-                            )
-                          )
-                        }
-                        className="w-32 rounded-lg border border-slate-300 bg-white px-2.5 py-1.5 text-right font-mono text-base tabular-nums dark:border-slate-700 dark:bg-slate-800 dark:text-white"
-                      />
-                    </td>
-                    <td className="py-3.5 pl-3 text-right font-mono text-lg font-bold text-slate-900 tabular-nums dark:text-white">
-                      {saldo !== undefined ? formatEUR(saldo) : 'Oculta'}
-                    </td>
-                    <td className="py-3.5 pl-4 text-right">
-                      <button
-                        type="button"
-                        onClick={() =>
-                          onUpdateAccounts(
-                            state.accounts.map((item) =>
-                              item.id === acc.id ? { ...item, activa: !item.activa } : item
-                            )
-                          )
-                        }
-                        className={`rounded-lg px-3 py-1.5 text-sm font-semibold ${
-                          acc.activa
-                            ? 'bg-emerald-50 text-emerald-800 dark:bg-emerald-950/40 dark:text-emerald-300'
-                            : 'bg-slate-100 text-slate-600 dark:bg-slate-800 dark:text-slate-400'
-                        }`}
-                      >
-                        {acc.activa ? 'Activa' : 'Inactiva'}
-                      </button>
-                    </td>
-                  </tr>
+                                  className="w-full rounded-lg border border-slate-300 bg-white px-2.5 py-1.5 text-sm font-medium dark:border-slate-700 dark:bg-slate-800 dark:text-white"
+                                >
+                                  {Object.entries(CARD_SUBTYPE_LABELS).map(([k, v]) => (
+                                    <option key={k} value={k}>
+                                      {v}
+                                    </option>
+                                  ))}
+                                </select>
+                              </label>
+                              <label className="space-y-1 text-xs font-semibold text-slate-700 dark:text-slate-300">
+                                <span>Límite disponible (€)</span>
+                                <input
+                                  type="number"
+                                  min="0"
+                                  step="10"
+                                  value={cfg.limiteDisponible}
+                                  onChange={(e) =>
+                                    updateCfg({
+                                      limiteDisponible: Math.max(0, Number(e.target.value) || 0),
+                                    })
+                                  }
+                                  className="w-full rounded-lg border border-slate-300 bg-white px-2.5 py-1.5 font-mono text-sm tabular-nums dark:border-slate-700 dark:bg-slate-800 dark:text-white"
+                                />
+                              </label>
+                              <label className="space-y-1 text-xs font-semibold text-slate-700 dark:text-slate-300">
+                                <span>Recarga automática mensual (€)</span>
+                                <input
+                                  type="number"
+                                  min="0"
+                                  step="10"
+                                  value={cfg.recargaMensualImporte}
+                                  onChange={(e) =>
+                                    updateCfg({
+                                      recargaMensualImporte: Math.max(0, Number(e.target.value) || 0),
+                                    })
+                                  }
+                                  className="w-full rounded-lg border border-slate-300 bg-white px-2.5 py-1.5 font-mono text-sm tabular-nums dark:border-slate-700 dark:bg-slate-800 dark:text-white"
+                                />
+                              </label>
+                              <label className="space-y-1 text-xs font-semibold text-slate-700 dark:text-slate-300">
+                                <span>Fecha periódica de recarga</span>
+                                <input
+                                  type="date"
+                                  value={cfg.fechaPeriodicaRecarga}
+                                  onChange={(e) =>
+                                    updateCfg({ fechaPeriodicaRecarga: e.target.value })
+                                  }
+                                  className="w-full rounded-lg border border-slate-300 bg-white px-2.5 py-1.5 text-sm dark:border-slate-700 dark:bg-slate-800 dark:text-white"
+                                />
+                              </label>
+                              <label className="space-y-1 text-xs font-semibold text-slate-700 dark:text-slate-300">
+                                <span>Cuenta origen (opcional)</span>
+                                <select
+                                  value={cfg.cuentaOrigenRecargaId ?? ''}
+                                  onChange={(e) =>
+                                    updateCfg({
+                                      cuentaOrigenRecargaId: e.target.value || undefined,
+                                    })
+                                  }
+                                  className="w-full rounded-lg border border-slate-300 bg-white px-2.5 py-1.5 text-sm dark:border-slate-700 dark:bg-slate-800 dark:text-white"
+                                >
+                                  <option value="">Externa / Sin cuenta origen</option>
+                                  {nonCardActiveAccounts.map((src) => (
+                                    <option key={src.id} value={src.id}>
+                                      {src.nombre}
+                                    </option>
+                                  ))}
+                                </select>
+                              </label>
+                            </div>
+                            <p className="mt-2.5 text-xs text-slate-600 dark:text-slate-400">
+                              Regla de tope automática: saldo actual{' '}
+                              <span className="font-mono font-semibold tabular-nums">{formatEUR(effectiveBalance)}</span>
+                              {' · '}margen hasta límite{' '}
+                              <span className="font-mono font-semibold tabular-nums">{formatEUR(editCap.margenHastaLimite)}</span>
+                              {' · '}próxima recarga efectiva:{' '}
+                              <span className="font-mono font-bold text-blue-700 tabular-nums dark:text-blue-400">
+                                {formatEUR(editCap.importeEfectivoRecarga)}
+                              </span>
+                              {' '}(saldo final estimado {formatEUR(editCap.saldoTrasRecarga)}).
+                            </p>
+                          </td>
+                        </tr>
+                      );
+                    })()}
+                  </React.Fragment>
                 );
               })}
             </tbody>
           </table>
         </div>
 
+        {cardRechargeNotice && (
+          <div className="mt-3 rounded-lg border border-blue-200 bg-blue-50 px-3.5 py-2.5 text-xs font-medium text-blue-900 dark:border-blue-800 dark:bg-blue-950/30 dark:text-blue-200">
+            {cardRechargeNotice}
+          </div>
+        )}
+
         <form
           onSubmit={handleAddAccount}
-          className="mt-5 grid grid-cols-1 gap-3 border-t border-slate-200 pt-5 md:grid-cols-6 dark:border-slate-800"
+          className="mt-5 space-y-4 border-t border-slate-200 pt-5 dark:border-slate-800"
         >
-          <input
-            type="text"
-            required
-            value={accName}
-            onChange={(e) => setAccName(e.target.value)}
-            placeholder="Nueva cuenta (ej. Cuenta Nómina, Efectivo...)"
-            className="rounded-lg border border-slate-300 bg-white px-3 py-2 text-base md:col-span-2 dark:border-slate-700 dark:bg-slate-800 dark:text-white"
-          />
-          <select
-            value={accType}
-            onChange={(e) => setAccType(e.target.value as AccountType)}
-            className="rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm dark:border-slate-700 dark:bg-slate-800 dark:text-white"
-          >
-            {Object.entries(ACCOUNT_TYPE_LABELS).map(([key, label]) => (
-              <option key={key} value={key}>
-                {label}
-              </option>
-            ))}
-          </select>
-          <div className="grid grid-cols-2 gap-2">
-            <select
-              value={accOwner}
-              onChange={(e) => setAccOwner(e.target.value)}
-              className="rounded-lg border border-slate-300 bg-white px-2 py-2 text-sm dark:border-slate-700 dark:bg-slate-800 dark:text-white"
-            >
-              <option value="familiar">Hogar</option>
-              {state.members.map((m) => (
-                <option key={m.id} value={m.id}>
-                  {m.nombre}
-                </option>
-              ))}
-            </select>
-            <select
-              value={accVisibility}
-              onChange={(e) =>
-                setAccVisibility(e.target.value as 'compartida' | 'privada')
+          <div className="grid grid-cols-1 gap-3 md:grid-cols-6">
+            <input
+              type="text"
+              required
+              value={accName}
+              onChange={(e) => setAccName(e.target.value)}
+              placeholder={
+                accType === 'tarjeta'
+                  ? `Nueva tarjeta (${CARD_SUBTYPE_LABELS[cardSubtype]}, ej. Visa Hogar...)`
+                  : 'Nueva cuenta (ej. Cuenta Nómina, Efectivo...)'
               }
-              className="rounded-lg border border-slate-300 bg-white px-2 py-2 text-sm dark:border-slate-700 dark:bg-slate-800 dark:text-white"
+              className="rounded-lg border border-slate-300 bg-white px-3 py-2 text-base md:col-span-2 dark:border-slate-700 dark:bg-slate-800 dark:text-white"
+            />
+            <select
+              value={accType === 'tarjeta' ? `tarjeta:${cardSubtype}` : accType}
+              onChange={(e) => {
+                const val = e.target.value;
+                if (val.startsWith('tarjeta:')) {
+                  setAccType('tarjeta');
+                  setCardSubtype(val.replace('tarjeta:', '') as CardSubtype);
+                } else {
+                  setAccType(val as AccountType);
+                }
+              }}
+              aria-label="Tipo de cuenta o tarjeta"
+              className="rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm dark:border-slate-700 dark:bg-slate-800 dark:text-white"
             >
-              <option value="compartida">Compartida</option>
-              <option value="privada">Privada</option>
+              <option value="corriente">{ACCOUNT_TYPE_LABELS.corriente}</option>
+              <option value="ahorro">{ACCOUNT_TYPE_LABELS.ahorro}</option>
+              <option value="remunerada">{ACCOUNT_TYPE_LABELS.remunerada}</option>
+              <option value="efectivo">{ACCOUNT_TYPE_LABELS.efectivo}</option>
+              <optgroup label="Tipos de tarjeta">
+                <option value="tarjeta:credito">Tarjeta · Crédito</option>
+                <option value="tarjeta:debito">Tarjeta · Débito</option>
+                <option value="tarjeta:monedero">Tarjeta · Monedero</option>
+                <option value="tarjeta:virtual">Tarjeta · Virtual</option>
+                <option value="tarjeta:otras">Tarjeta · Otras</option>
+              </optgroup>
+              <option value="personalizada">{ACCOUNT_TYPE_LABELS.personalizada}</option>
             </select>
+            <div className="grid grid-cols-2 gap-2">
+              <select
+                value={accOwner}
+                onChange={(e) => setAccOwner(e.target.value)}
+                className="rounded-lg border border-slate-300 bg-white px-2 py-2 text-sm dark:border-slate-700 dark:bg-slate-800 dark:text-white"
+              >
+                <option value="familiar">Hogar</option>
+                {state.members.map((m) => (
+                  <option key={m.id} value={m.id}>
+                    {m.nombre}
+                  </option>
+                ))}
+              </select>
+              <select
+                value={accVisibility}
+                onChange={(e) =>
+                  setAccVisibility(e.target.value as 'compartida' | 'privada')
+                }
+                className="rounded-lg border border-slate-300 bg-white px-2 py-2 text-sm dark:border-slate-700 dark:bg-slate-800 dark:text-white"
+              >
+                <option value="compartida">Compartida</option>
+                <option value="privada">Privada</option>
+              </select>
+            </div>
+            <div className="grid grid-cols-2 gap-2">
+              <input
+                type="number"
+                step="0.01"
+                value={accBalance}
+                onChange={(e) => setAccBalance(e.target.value)}
+                placeholder="Saldo €"
+                aria-label="Saldo inicial en euros"
+                className="rounded-lg border border-slate-300 bg-white px-2.5 py-2 font-mono text-sm tabular-nums dark:border-slate-700 dark:bg-slate-800 dark:text-white"
+              />
+              <input
+                type="number"
+                step="0.05"
+                disabled={accType === 'tarjeta'}
+                value={accType === 'tarjeta' ? '0' : accTae}
+                onChange={(e) => setAccTae(e.target.value)}
+                placeholder="TAE %"
+                aria-label="TAE %"
+                className="rounded-lg border border-slate-300 bg-white px-2.5 py-2 font-mono text-sm tabular-nums disabled:bg-slate-100 disabled:text-slate-400 dark:border-slate-700 dark:bg-slate-800 dark:text-white dark:disabled:bg-slate-900"
+              />
+            </div>
+            <button
+              type="submit"
+              className="inline-flex items-center justify-center gap-2 rounded-lg bg-slate-900 px-4 py-2 text-sm font-semibold text-white hover:bg-slate-800 dark:bg-white dark:text-slate-900"
+            >
+              <Plus className="h-4 w-4" />
+              {accType === 'tarjeta' ? 'Añadir Tarjeta' : 'Añadir Cuenta'}
+            </button>
           </div>
-          <div className="grid grid-cols-2 gap-2">
-            <input
-              type="number"
-              step="0.01"
-              value={accBalance}
-              onChange={(e) => setAccBalance(e.target.value)}
-              placeholder="Saldo €"
-              className="rounded-lg border border-slate-300 bg-white px-2.5 py-2 font-mono text-sm tabular-nums dark:border-slate-700 dark:bg-slate-800 dark:text-white"
-            />
-            <input
-              type="number"
-              step="0.05"
-              value={accTae}
-              onChange={(e) => setAccTae(e.target.value)}
-              placeholder="TAE %"
-              className="rounded-lg border border-slate-300 bg-white px-2.5 py-2 font-mono text-sm tabular-nums dark:border-slate-700 dark:bg-slate-800 dark:text-white"
-            />
-          </div>
-          <button
-            type="submit"
-            className="inline-flex items-center justify-center gap-2 rounded-lg bg-slate-900 px-4 py-2 text-sm font-semibold text-white hover:bg-slate-800 dark:bg-white dark:text-slate-900"
-          >
-            <Plus className="h-4 w-4" />
-            Añadir Cuenta
-          </button>
+
+          {accType === 'tarjeta' && (
+            <div className="rounded-xl border border-slate-200 bg-slate-50/70 p-4 dark:border-slate-800 dark:bg-slate-800/40">
+              <div className="mb-3 flex items-center gap-2 text-sm font-semibold text-slate-900 dark:text-white">
+                <CreditCard className="h-4 w-4 text-blue-700 dark:text-blue-400" />
+                Configuración de Tarjeta y Recarga Automática Mensual
+              </div>
+              <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-5">
+                <label className="space-y-1 text-xs font-semibold text-slate-700 dark:text-slate-300">
+                  <span>Tipo de tarjeta</span>
+                  <select
+                    value={cardSubtype}
+                    onChange={(e) => setCardSubtype(e.target.value as CardSubtype)}
+                    className="w-full rounded-lg border border-slate-300 bg-white px-2.5 py-2 text-sm font-medium dark:border-slate-700 dark:bg-slate-800 dark:text-white"
+                  >
+                    {Object.entries(CARD_SUBTYPE_LABELS).map(([key, label]) => (
+                      <option key={key} value={key}>
+                        {label}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+
+                <label className="space-y-1 text-xs font-semibold text-slate-700 dark:text-slate-300">
+                  <span>Límite disponible (€)</span>
+                  <input
+                    type="number"
+                    min="0"
+                    step="10"
+                    required
+                    value={cardLimit}
+                    onChange={(e) => setCardLimit(e.target.value)}
+                    placeholder="Ej. 500"
+                    className="w-full rounded-lg border border-slate-300 bg-white px-2.5 py-2 font-mono text-sm tabular-nums dark:border-slate-700 dark:bg-slate-800 dark:text-white"
+                  />
+                </label>
+
+                <label className="space-y-1 text-xs font-semibold text-slate-700 dark:text-slate-300">
+                  <span>Recarga automática mensual (€)</span>
+                  <input
+                    type="number"
+                    min="0"
+                    step="10"
+                    value={cardMonthlyRecharge}
+                    onChange={(e) => setCardMonthlyRecharge(e.target.value)}
+                    placeholder="Ej. 150"
+                    className="w-full rounded-lg border border-slate-300 bg-white px-2.5 py-2 font-mono text-sm tabular-nums dark:border-slate-700 dark:bg-slate-800 dark:text-white"
+                  />
+                </label>
+
+                <label className="space-y-1 text-xs font-semibold text-slate-700 dark:text-slate-300">
+                  <span>Fecha periódica de recarga</span>
+                  <input
+                    type="date"
+                    required
+                    value={cardRechargeDate}
+                    onChange={(e) => setCardRechargeDate(e.target.value)}
+                    className="w-full rounded-lg border border-slate-300 bg-white px-2.5 py-2 text-sm dark:border-slate-700 dark:bg-slate-800 dark:text-white"
+                  />
+                </label>
+
+                <label className="space-y-1 text-xs font-semibold text-slate-700 dark:text-slate-300">
+                  <span>Cuenta origen de recarga</span>
+                  <select
+                    value={cardSourceAccountId}
+                    onChange={(e) => setCardSourceAccountId(e.target.value)}
+                    className="w-full rounded-lg border border-slate-300 bg-white px-2.5 py-2 text-sm dark:border-slate-700 dark:bg-slate-800 dark:text-white"
+                  >
+                    <option value="">Externa / Sin cuenta origen</option>
+                    {nonCardActiveAccounts.map((src) => (
+                      <option key={src.id} value={src.id}>
+                        {src.nombre}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+              </div>
+
+              <p className="mt-3 text-xs text-slate-600 dark:text-slate-400">
+                Solo se recarga hasta alcanzar el límite disponible:{' '}
+                {Number(cardLimit) > 0 && Number(cardMonthlyRecharge) > 0 ? (
+                  newCardCapPreview.importeEfectivoRecarga > 0 ? (
+                    <>
+                      en la próxima fecha periódica (día{' '}
+                      <span className="font-mono font-semibold">
+                        {cardRechargeDate.slice(8, 10) || '01'}
+                      </span>{' '}
+                      de cada mes) se recargarán{' '}
+                      <span className="font-mono font-bold text-blue-700 tabular-nums dark:text-blue-400">
+                        {formatEUR(newCardCapPreview.importeEfectivoRecarga)}
+                      </span>{' '}
+                      hasta alcanzar un saldo de{' '}
+                      <span className="font-mono font-semibold tabular-nums">
+                        {formatEUR(newCardCapPreview.saldoTrasRecarga)}
+                      </span>{' '}
+                      (límite máximo{' '}
+                      <span className="font-mono tabular-nums">
+                        {formatEUR(Number(cardLimit) || 0)}
+                      </span>
+                      ).
+                    </>
+                  ) : (
+                    <span className="font-semibold text-amber-700 dark:text-amber-300">
+                      el saldo inicial ya alcanza o supera el límite disponible, por lo que no se recargará importe adicional (0,00 €).
+                    </span>
+                  )
+                ) : (
+                  'indica un límite y un importe mensual mayores que 0 para activar la recarga automática mensual.'
+                )}
+              </p>
+            </div>
+          )}
         </form>
       </section>
 
@@ -1319,6 +1699,11 @@ export const AccountsAndFunds: React.FC<AccountsAndFundsProps> = ({
                 <p className="mt-1 text-base text-slate-600 dark:text-slate-400">
                   Fija límites de gasto mensual por categoría y supervisa en tiempo real qué tan
                   cerca estás de alcanzarlos durante el mes en curso.
+                  {summary.prorrateoActivo && (
+                    <span className="ml-2 inline-block rounded border border-blue-200 bg-blue-50 px-2 py-0.5 text-xs font-semibold text-blue-800 dark:border-blue-800 dark:bg-blue-950/40 dark:text-blue-300">
+                      Prorrateo activo: trimestrales ÷ 3 · anuales ÷ 12
+                    </span>
+                  )}
                 </p>
               </div>
               <div className="text-right font-mono text-sm tabular-nums text-slate-500 dark:text-slate-400">

@@ -222,6 +222,7 @@ export function createEconomyTemplateState(templateId: TemplateId): EconomyWorks
       mode: 'familiar',
       activeMemberScope: 'todos',
       actingMemberId: 'mem-a1',
+      prorratearGastos: false,
       members: [
         {
           id: 'mem-a1',
@@ -749,6 +750,7 @@ export function createEconomyTemplateState(templateId: TemplateId): EconomyWorks
       mode: 'personal',
       activeMemberScope: 'todos',
       actingMemberId: 'mem-ind',
+      prorratearGastos: false,
       members: [
         {
           id: 'mem-ind',
@@ -938,6 +940,7 @@ export function createEconomyTemplateState(templateId: TemplateId): EconomyWorks
     mode: 'personal',
     activeMemberScope: 'todos',
     actingMemberId: 'mem-juv',
+    prorratearGastos: false,
     members: [
       {
         id: 'mem-juv',

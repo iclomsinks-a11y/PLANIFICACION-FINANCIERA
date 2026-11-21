@@ -1,5 +1,6 @@
 import React, { useMemo, useState } from 'react';
 import {
+  CalendarClock,
   Check,
   Copy,
   Download,
@@ -11,7 +12,10 @@ import {
   Trash2,
   X,
 } from 'lucide-react';
-import { EconomySummaryResult } from '../engines/economyEngine';
+import {
+  EconomySummaryResult,
+  isProratableExpense,
+} from '../engines/economyEngine';
 import {
   EconomyWorkspaceState,
   FinancialMovement,
@@ -29,6 +33,7 @@ interface MovementsLedgerProps {
   periodPreset: PeriodPreset;
   pendingGmailCount?: number;
   onChangePeriod: (preset: PeriodPreset) => void;
+  onToggleProrratearGastos: () => void;
   onAddMovement: (mov: Omit<FinancialMovement, 'id'>) => void;
   onUpdateMovement: (mov: FinancialMovement) => void;
   onDeleteMovement: (id: string) => void;
@@ -89,6 +94,7 @@ export const MovementsLedger: React.FC<MovementsLedgerProps> = ({
   periodPreset,
   pendingGmailCount = 0,
   onChangePeriod,
+  onToggleProrratearGastos,
   onAddMovement,
   onUpdateMovement,
   onDeleteMovement,
@@ -103,6 +109,7 @@ export const MovementsLedger: React.FC<MovementsLedgerProps> = ({
   const [filterStatus, setFilterStatus] = useState<'todos' | MovementStatus>('todos');
   const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
   const [editorOpen, setEditorOpen] = useState(false);
+  const [savedNotice, setSavedNotice] = useState<string | null>(null);
 
   const visibleAccounts = summary.accountBalances.map((b) => b.account);
 
@@ -244,6 +251,27 @@ export const MovementsLedger: React.FC<MovementsLedgerProps> = ({
       onAddMovement(payload);
     }
 
+    const inPeriod =
+      payload.fecha >= summary.periodRange.start &&
+      payload.fecha <= summary.periodRange.end;
+    if (
+      payload.tipo === 'gasto' &&
+      (payload.recurrencia === 'trimestral' || payload.recurrencia === 'anual')
+    ) {
+      const div = payload.recurrencia === 'trimestral' ? 3 : 12;
+      setSavedNotice(
+        summary.prorrateoActivo
+          ? `"${payload.concepto}" guardado (${payload.fecha}). Prorrateo activo: ${formatEUR(payload.importe / div)}/mes (÷ ${div}).`
+          : `"${payload.concepto}" guardado para ${payload.fecha}. Activa "Prorratear gastos" para dividirlo entre ${div} (${formatEUR(payload.importe / div)}/mes).`
+      );
+    } else if (!inPeriod) {
+      setSavedNotice(
+        `"${payload.concepto}" guardado para ${payload.fecha}. Cambia el filtro de período si deseas verlo en la tabla actual.`
+      );
+    } else {
+      setSavedNotice(null);
+    }
+
     setEditorOpen(false);
   };
 
@@ -283,13 +311,14 @@ export const MovementsLedger: React.FC<MovementsLedgerProps> = ({
     let gastos = 0;
     let transferencias = 0;
     for (const m of filteredMovements) {
-      if (m.tipo === 'ingreso') ingresos += m.importe;
-      else if (m.tipo === 'gasto') gastos += m.importe;
-      else if (m.tipo === 'devolucion') gastos = Math.max(0, gastos - m.importe);
+      const effAmount = summary.effectiveAmountByMovementId[m.id]?.effectiveAmount ?? m.importe;
+      if (m.tipo === 'ingreso') ingresos += effAmount;
+      else if (m.tipo === 'gasto') gastos += effAmount;
+      else if (m.tipo === 'devolucion') gastos = Math.max(0, gastos - effAmount);
       else if (m.tipo === 'transferencia') transferencias += m.importe;
     }
     return { ingresos, gastos, transferencias };
-  }, [filteredMovements]);
+  }, [filteredMovements, summary.effectiveAmountByMovementId]);
 
   const getCategoryName = (id: string) =>
     state.categories.find((c) => c.id === id)?.nombre ?? 'Sin categoría';
@@ -311,26 +340,31 @@ export const MovementsLedger: React.FC<MovementsLedgerProps> = ({
       'Visibilidad',
       'Estado',
       'Recurrencia',
-      'Importe EUR',
+      'Importe Recibo EUR',
+      'Importe Imputado Periodo EUR',
       'Justificante',
       'Observaciones',
     ];
-    const rows = filteredMovements.map((m) => [
-      m.fecha,
-      MOVEMENT_TYPE_LABELS[m.tipo],
-      `"${m.concepto.replaceAll('"', '""')}"`,
-      `"${getCategoryName(m.categoriaId).replaceAll('"', '""')}"`,
-      `"${m.subcategoria.replaceAll('"', '""')}"`,
-      `"${getAccountName(m.cuentaId).replaceAll('"', '""')}"`,
-      m.cuentaDestinoId ? `"${getAccountName(m.cuentaDestinoId).replaceAll('"', '""')}"` : '',
-      `"${getMemberName(m.miembroId).replaceAll('"', '""')}"`,
-      m.visibilidad,
-      STATUS_LABELS[m.estado],
-      RECURRENCE_LABELS[m.recurrencia],
-      m.importe.toFixed(2).replace('.', ','),
-      m.justificanteNombre ?? '',
-      `"${(m.observaciones ?? '').replaceAll('"', '""')}"`,
-    ]);
+    const rows = filteredMovements.map((m) => {
+      const effAmount = summary.effectiveAmountByMovementId[m.id]?.effectiveAmount ?? m.importe;
+      return [
+        m.fecha,
+        MOVEMENT_TYPE_LABELS[m.tipo],
+        `"${m.concepto.replaceAll('"', '""')}"`,
+        `"${getCategoryName(m.categoriaId).replaceAll('"', '""')}"`,
+        `"${m.subcategoria.replaceAll('"', '""')}"`,
+        `"${getAccountName(m.cuentaId).replaceAll('"', '""')}"`,
+        m.cuentaDestinoId ? `"${getAccountName(m.cuentaDestinoId).replaceAll('"', '""')}"` : '',
+        `"${getMemberName(m.miembroId).replaceAll('"', '""')}"`,
+        m.visibilidad,
+        STATUS_LABELS[m.estado],
+        RECURRENCE_LABELS[m.recurrencia],
+        m.importe.toFixed(2).replace('.', ','),
+        effAmount.toFixed(2).replace('.', ','),
+        m.justificanteNombre ?? '',
+        `"${(m.observaciones ?? '').replaceAll('"', '""')}"`,
+      ];
+    });
     const csv = `\uFEFF${[headers.join(';'), ...rows.map((r) => r.join(';'))].join('\n')}`;
     downloadTextFile(
       `movimientos-${state.templateId}-${new Date().toISOString().slice(0, 10)}.csv`,
@@ -354,6 +388,29 @@ export const MovementsLedger: React.FC<MovementsLedgerProps> = ({
             </p>
           </div>
           <div className="flex flex-wrap items-center gap-2.5">
+            <button
+              type="button"
+              onClick={onToggleProrratearGastos}
+              aria-pressed={summary.prorrateoActivo}
+              title="Divide los gastos trimestrales entre 3 y los anuales entre 12 para repartir IBI, seguros o agua"
+              className={`inline-flex items-center gap-2 rounded-lg border px-3.5 py-2.5 text-sm font-semibold transition-colors ${
+                summary.prorrateoActivo
+                  ? 'border-blue-700 bg-blue-700 text-white hover:bg-blue-800 dark:border-blue-500 dark:bg-blue-600'
+                  : 'border-slate-300 bg-white text-slate-800 hover:bg-slate-50 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-100'
+              }`}
+            >
+              <CalendarClock className="h-4 w-4" />
+              Prorratear gastos
+              <span
+                className={`rounded px-1.5 py-0.5 font-mono text-xs font-bold ${
+                  summary.prorrateoActivo
+                    ? 'bg-white/20 text-white'
+                    : 'bg-slate-100 text-slate-600 dark:bg-slate-700 dark:text-slate-300'
+                }`}
+              >
+                {summary.prorrateoActivo ? 'ON · ÷3 / ÷12' : 'OFF'}
+              </span>
+            </button>
             {onOpenGeminiAssistant && (
               <button
                 type="button"
@@ -491,7 +548,7 @@ export const MovementsLedger: React.FC<MovementsLedgerProps> = ({
             </strong>
           </span>
           <span className="text-slate-600 dark:text-slate-400">
-            Gasto neto:{' '}
+            Gasto neto{summary.prorrateoActivo ? ' (prorrateado)' : ''}:{' '}
             <strong className="font-mono text-red-700 tabular-nums dark:text-red-400">
               {formatEUR(totalsFiltered.gastos)}
             </strong>
@@ -502,7 +559,25 @@ export const MovementsLedger: React.FC<MovementsLedgerProps> = ({
               {formatEUR(totalsFiltered.transferencias)}
             </strong>
           </span>
+          {summary.prorrateoActivo && (
+            <span className="rounded border border-blue-200 bg-blue-50 px-2 py-0.5 text-xs font-semibold text-blue-800 dark:border-blue-800 dark:bg-blue-950/40 dark:text-blue-300">
+              Prorrateo activo: trimestrales ÷ 3 · anuales ÷ 12 (saldo bancario real intacto)
+            </span>
+          )}
         </div>
+
+        {savedNotice && (
+          <div className="mt-4 flex items-center justify-between gap-3 rounded-lg border border-emerald-200 bg-emerald-50 px-4 py-2.5 text-sm font-medium text-emerald-900 dark:border-emerald-900/70 dark:bg-emerald-950/30 dark:text-emerald-200">
+            <span>{savedNotice}</span>
+            <button
+              type="button"
+              onClick={() => setSavedNotice(null)}
+              className="text-xs font-semibold underline"
+            >
+              Cerrar
+            </button>
+          </div>
+        )}
       </section>
 
       {/* Editor Detallado de Movimiento (Crear / Editar) */}
@@ -523,6 +598,62 @@ export const MovementsLedger: React.FC<MovementsLedgerProps> = ({
           </div>
 
           <form onSubmit={handleSaveDraft} className="mt-4 space-y-4">
+            {draft.tipo === 'gasto' && (
+              <div className="flex flex-wrap items-center gap-2 rounded-lg border border-slate-200 bg-slate-50 px-3.5 py-2.5 dark:border-slate-800 dark:bg-slate-800/40">
+                <span className="text-xs font-semibold uppercase tracking-wider text-slate-500 dark:text-slate-400">
+                  Plantillas periódicas (fecha específica):
+                </span>
+                {[
+                  {
+                    label: 'IBI anual (÷ 12)',
+                    concepto: 'IBI vivienda anual',
+                    categoriaId: 'cat-vivienda',
+                    subcategoria: 'IBI y tasas',
+                    recurrencia: 'anual' as MovementRecurrence,
+                  },
+                  {
+                    label: 'Seguro hogar (÷ 12)',
+                    concepto: 'Seguro anual de hogar',
+                    categoriaId: 'cat-vivienda',
+                    subcategoria: 'Seguro de hogar',
+                    recurrencia: 'anual' as MovementRecurrence,
+                  },
+                  {
+                    label: 'Seguro vehículo (÷ 12)',
+                    concepto: 'Seguro anual vehículo',
+                    categoriaId: 'cat-transporte',
+                    subcategoria: 'Seguro de vehículo',
+                    recurrencia: 'anual' as MovementRecurrence,
+                  },
+                  {
+                    label: 'Agua hogar trimestral (÷ 3)',
+                    concepto: 'Recibo agua del hogar (trimestral)',
+                    categoriaId: 'cat-vivienda',
+                    subcategoria: 'Agua',
+                    recurrencia: 'trimestral' as MovementRecurrence,
+                  },
+                ].map((preset) => (
+                  <button
+                    key={preset.label}
+                    type="button"
+                    onClick={() =>
+                      setDraft((p) => ({
+                        ...p,
+                        concepto: preset.concepto,
+                        categoriaId: preset.categoriaId,
+                        subcategoria: preset.subcategoria,
+                        recurrencia: preset.recurrencia,
+                        financiado: false,
+                      }))
+                    }
+                    className="rounded-md border border-slate-300 bg-white px-2.5 py-1 text-xs font-semibold text-slate-700 hover:border-blue-600 hover:text-blue-700 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-200 dark:hover:border-blue-400"
+                  >
+                    {preset.label}
+                  </button>
+                ))}
+              </div>
+            )}
+
             <div className="grid grid-cols-1 gap-4 md:grid-cols-2 lg:grid-cols-4">
               <label className="space-y-1.5 text-sm font-semibold text-slate-700 dark:text-slate-300">
                 <span>Tipo de operación</span>
@@ -554,7 +685,7 @@ export const MovementsLedger: React.FC<MovementsLedgerProps> = ({
               </label>
 
               <label className="space-y-1.5 text-sm font-semibold text-slate-700 dark:text-slate-300">
-                <span>Importe (€)</span>
+                <span>Importe total del recibo (€)</span>
                 <input
                   type="number"
                   min="0.01"
@@ -567,7 +698,7 @@ export const MovementsLedger: React.FC<MovementsLedgerProps> = ({
               </label>
 
               <label className="space-y-1.5 text-sm font-semibold text-slate-700 dark:text-slate-300">
-                <span>Fecha</span>
+                <span>Fecha específica concreta</span>
                 <input
                   type="date"
                   required
@@ -745,11 +876,45 @@ export const MovementsLedger: React.FC<MovementsLedgerProps> = ({
                 >
                   <option value="puntual">Puntual</option>
                   <option value="mensual">Mensual</option>
-                  <option value="trimestral">Trimestral</option>
-                  <option value="anual">Anual</option>
+                  <option value="trimestral">Trimestral (prorrateo ÷ 3)</option>
+                  <option value="anual">Anual (prorrateo ÷ 12)</option>
                 </select>
               </label>
             </div>
+
+            {draft.tipo === 'gasto' &&
+              !draft.financiado &&
+              (draft.recurrencia === 'trimestral' || draft.recurrencia === 'anual') && (
+                <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-blue-200 bg-blue-50/70 px-4 py-3 text-sm text-blue-950 dark:border-blue-900/70 dark:bg-blue-950/30 dark:text-blue-200">
+                  <div>
+                    <strong>
+                      {draft.recurrencia === 'trimestral'
+                        ? 'Prorrateo trimestral (÷ 3 meses)'
+                        : 'Prorrateo anual (÷ 12 meses)'}
+                      :
+                    </strong>{' '}
+                    {Number(draft.importe) > 0
+                      ? `Un recibo de ${formatEUR(Number(draft.importe))} imputa ${formatEUR(
+                          Number(draft.importe) / (draft.recurrencia === 'trimestral' ? 3 : 12)
+                        )}/mes sin distorsionar un único mes.`
+                      : `El importe del recibo se dividirá entre ${
+                          draft.recurrencia === 'trimestral' ? '3' : '12'
+                        } meses cuando "Prorratear gastos" esté activado.`}
+                    <span className="ml-2 text-xs font-semibold">
+                      ({summary.prorrateoActivo ? 'Prorratear gastos: ON' : 'Prorratear gastos: OFF'})
+                    </span>
+                  </div>
+                  {!summary.prorrateoActivo && (
+                    <button
+                      type="button"
+                      onClick={onToggleProrratearGastos}
+                      className="rounded-lg bg-blue-700 px-3 py-1.5 text-xs font-semibold text-white hover:bg-blue-800"
+                    >
+                      Activar Prorratear gastos
+                    </button>
+                  )}
+                </div>
+              )}
 
             <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
               <label className="space-y-1.5 text-sm font-semibold text-slate-700 dark:text-slate-300">
@@ -1073,12 +1238,30 @@ export const MovementsLedger: React.FC<MovementsLedgerProps> = ({
                             : 'text-red-700 dark:text-red-400'
                       }`}
                     >
-                      {m.tipo === 'ingreso' || m.tipo === 'devolucion'
-                        ? '+'
-                        : m.tipo === 'transferencia'
-                          ? '⇄ '
-                          : '-'}
-                      {formatEUR(m.importe)}
+                      {(() => {
+                        const effItem = summary.effectiveAmountByMovementId[m.id];
+                        const displayAmount = effItem ? effItem.effectiveAmount : m.importe;
+                        const showProration =
+                          effItem?.isProrated && isProratableExpense(m);
+                        return (
+                          <div>
+                            <div>
+                              {m.tipo === 'ingreso' || m.tipo === 'devolucion'
+                                ? '+'
+                                : m.tipo === 'transferencia'
+                                  ? '⇄ '
+                                  : '-'}
+                              {formatEUR(displayAmount)}
+                            </div>
+                            {showProration && (
+                              <div className="text-xs font-normal text-blue-700 dark:text-blue-400">
+                                Recibo {formatEUR(m.importe)} ÷ {effItem.divisor} (
+                                {formatEUR(effItem.monthlyShare)}/mes)
+                              </div>
+                            )}
+                          </div>
+                        );
+                      })()}
                     </td>
 
                     <td className="py-4 pl-3 pr-6 text-right whitespace-nowrap">

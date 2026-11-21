@@ -1,9 +1,10 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { User } from 'firebase/auth';
-import { FlaskConical, Moon, RotateCcw, Scale, Sun } from 'lucide-react';
+import { FlaskConical, MessageCircle, Moon, RotateCcw, Sun } from 'lucide-react';
 import { AccountsAndFunds } from './components/AccountsAndFunds';
 import { FinancialAdvisorPanel } from './components/FinancialAdvisorPanel';
 import { GeminiAssistantPanel } from './components/GeminiAssistantPanel';
+import { GestarianLandingView } from './components/GestarianLandingView';
 import { GmailInvoicesPanel } from './components/GmailInvoicesPanel';
 import { GoogleSignInButton } from './components/GoogleSignInButton';
 import { IrpfSimulator } from './components/IrpfSimulator';
@@ -19,11 +20,17 @@ import {
   TEMPLATE_METADATA,
   createEconomyTemplateState,
 } from './data/economyTemplates';
-import { computeEconomySummary } from './engines/economyEngine';
+import {
+  computeEconomySummary,
+  processDueCardAutoRecharges,
+} from './engines/economyEngine';
 import { simulateMortgageAndTreasury } from './engines/mortgageEngine';
 import {
   clearCachedGmailToken,
+  emailRegister,
+  emailSignIn,
   firebaseLogout,
+  formatEmailAuthError,
   formatGoogleAuthError,
   getCachedGmailToken,
   googleSignIn,
@@ -58,6 +65,29 @@ const SUPUESTOS_STORAGE_KEY = 'patrimonio_irpf_supuestos_v3';
 const LEGACY_STORAGE_KEY = 'patrimonio_irpf_economy_v2';
 const DISMISSED_GMAIL_KEY = 'patrimonio_irpf_dismissed_gmail_v1';
 const THEME_KEY = 'patrimonio_irpf_theme_v1';
+const PORTRAIT_SCROLL_MEDIA_QUERY =
+  '(max-width: 767px), ((max-width: 1024px) and (orientation: portrait))';
+
+const SECTION_ORDER: MainSection[] = [
+  'resumen',
+  'movimientos',
+  'cuentas',
+  'comparador',
+  'hipoteca',
+  'irpf',
+  'poster',
+];
+
+const SECTION_LABELS: Record<MainSection, string> = {
+  resumen: 'Resumen',
+  movimientos: 'Movimientos',
+  cuentas: 'Cuentas',
+  comparador: 'Comparador',
+  hipoteca: 'Hipoteca',
+  irpf: 'IRPF',
+  asesor: 'Asesor IA',
+  poster: 'Póster',
+};
 
 function recurrenceAnnualFactor(recurrence: MovementRecurrence): number {
   if (recurrence === 'mensual') return 12;
@@ -144,13 +174,25 @@ function loadInitialDismissedGmailIds(): string[] {
 
 export default function App() {
   const [store, setStore] = useState<SupuestosWorkspaceStore>(loadInitialSupuestosStore);
+  const [showLanding, setShowLanding] = useState<boolean>(true);
   const [activeSection, setActiveSection] = useState<MainSection>('resumen');
   const [periodPreset, setPeriodPreset] = useState<PeriodPreset>('mes_actual');
   const [customStart, setCustomStart] = useState('2026-11-01');
   const [customEnd, setCustomEnd] = useState('2026-11-30');
   const [posterFullscreen, setPosterFullscreen] = useState(false);
+  const [advisorChatOpen, setAdvisorChatOpen] = useState(false);
   const [wizardOpen, setWizardOpen] = useState(false);
   const [testAccessModalOpen, setTestAccessModalOpen] = useState(false);
+  const [isPortraitScrollViewport, setIsPortraitScrollViewport] = useState<boolean>(() => {
+    if (typeof window === 'undefined') return false;
+    return window.matchMedia(PORTRAIT_SCROLL_MEDIA_QUERY).matches;
+  });
+
+  const horizontalTrackRef = useRef<HTMLDivElement | null>(null);
+  const programmaticScrollRef = useRef(false);
+  const programmaticTimerRef = useRef<number | null>(null);
+  const scrollSyncTimerRef = useRef<number | null>(null);
+  const mobileNavTabRefs = useRef<Partial<Record<MainSection, HTMLButtonElement | null>>>({});
 
   // Fase 7: Asistente Gemini & OCR de tickets
   const [geminiModalOpen, setGeminiModalOpen] = useState(false);
@@ -212,6 +254,51 @@ export default function App() {
   useEffect(() => {
     void testFirestoreConnection();
   }, []);
+
+  // Recarga automática mensual periódica de tarjetas (hasta alcanzar su límite disponible)
+  useEffect(() => {
+    updateActiveState((prev) => {
+      const res = processDueCardAutoRecharges(prev);
+      return res.appliedCount > 0 || res.nextState !== prev ? res.nextState : prev;
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [store.activeSupuestoId]);
+
+  // Detección de móvil y tablet portrait para habilitar scroll lateral entre secciones
+  useEffect(() => {
+    const mql = window.matchMedia(PORTRAIT_SCROLL_MEDIA_QUERY);
+    const updateMatch = () => setIsPortraitScrollViewport(mql.matches);
+    updateMatch();
+    mql.addEventListener('change', updateMatch);
+    window.addEventListener('resize', updateMatch);
+    return () => {
+      mql.removeEventListener('change', updateMatch);
+      window.removeEventListener('resize', updateMatch);
+    };
+  }, []);
+
+  // Sincronización inicial al entrar desde portada o al cambiar a portrait
+  useEffect(() => {
+    if (showLanding || !isPortraitScrollViewport) return;
+    const track = horizontalTrackRef.current;
+    if (!track) return;
+    const idx = SECTION_ORDER.indexOf(activeSection);
+    if (idx < 0) return;
+    const targetLeft = idx * track.clientWidth;
+    if (Math.abs(track.scrollLeft - targetLeft) > 4) {
+      programmaticScrollRef.current = true;
+      track.scrollTo({ left: targetLeft, behavior: 'auto' });
+      if (programmaticTimerRef.current) window.clearTimeout(programmaticTimerRef.current);
+      programmaticTimerRef.current = window.setTimeout(() => {
+        programmaticScrollRef.current = false;
+      }, 150);
+    }
+    mobileNavTabRefs.current[activeSection]?.scrollIntoView({
+      inline: 'center',
+      block: 'nearest',
+      behavior: 'smooth',
+    });
+  }, [showLanding, isPortraitScrollViewport, activeSection]);
 
   const activeSupuesto = useMemo(
     () =>
@@ -332,7 +419,7 @@ export default function App() {
     return () => window.clearTimeout(timer);
   }, [user, store.activeSupuestoId, store.nextSupuestoNumber, activeSupuesto, dismissedGmailIds]);
 
-  const handleGoogleSignIn = async (includeGmail = false) => {
+  const handleGoogleSignIn = async (includeGmail = false): Promise<boolean> => {
     setAuthLoading(true);
     setAuthNotice(null);
     if (includeGmail) setGmailError(null);
@@ -348,6 +435,7 @@ export default function App() {
           );
         }
       }
+      return true;
     } catch (err) {
       const { message } = formatGoogleAuthError(err, includeGmail);
       if (includeGmail) {
@@ -356,6 +444,7 @@ export default function App() {
       if (!includeGmail || !gmailPanelOpen) {
         setAuthNotice(message);
       }
+      return false;
     } finally {
       setAuthLoading(false);
     }
@@ -742,6 +831,68 @@ export default function App() {
     );
   };
 
+  const navigateToSection = useCallback(
+    (sec: MainSection) => {
+      if (sec === 'asesor') {
+        setAdvisorChatOpen(true);
+        return;
+      }
+      setActiveSection(sec);
+      setPosterFullscreen(false);
+      if (isPortraitScrollViewport && horizontalTrackRef.current) {
+        const idx = SECTION_ORDER.indexOf(sec);
+        if (idx >= 0) {
+          programmaticScrollRef.current = true;
+          horizontalTrackRef.current.scrollTo({
+            left: idx * horizontalTrackRef.current.clientWidth,
+            behavior: 'smooth',
+          });
+          if (programmaticTimerRef.current) {
+            window.clearTimeout(programmaticTimerRef.current);
+          }
+          programmaticTimerRef.current = window.setTimeout(() => {
+            programmaticScrollRef.current = false;
+          }, 500);
+        }
+      }
+      mobileNavTabRefs.current[sec]?.scrollIntoView({
+        inline: 'center',
+        block: 'nearest',
+        behavior: 'smooth',
+      });
+    },
+    [isPortraitScrollViewport]
+  );
+
+  const handleHorizontalTrackScroll = useCallback(() => {
+    if (programmaticScrollRef.current) return;
+    const track = horizontalTrackRef.current;
+    if (!track || track.clientWidth <= 0) return;
+
+    if (scrollSyncTimerRef.current) {
+      window.clearTimeout(scrollSyncTimerRef.current);
+    }
+    scrollSyncTimerRef.current = window.setTimeout(() => {
+      const idx = Math.max(
+        0,
+        Math.min(
+          SECTION_ORDER.length - 1,
+          Math.round(track.scrollLeft / Math.max(1, track.clientWidth))
+        )
+      );
+      const nextSection = SECTION_ORDER[idx];
+      if (nextSection && nextSection !== activeSection) {
+        setActiveSection(nextSection);
+        setPosterFullscreen(false);
+        mobileNavTabRefs.current[nextSection]?.scrollIntoView({
+          inline: 'center',
+          block: 'nearest',
+          behavior: 'smooth',
+        });
+      }
+    }, 85);
+  }, [activeSection]);
+
   const navItems: { id: MainSection; label: string }[] = [
     { id: 'resumen', label: 'Resumen' },
     { id: 'movimientos', label: 'Movimientos' },
@@ -751,6 +902,235 @@ export default function App() {
     { id: 'irpf', label: 'IRPF' },
   ];
 
+  const renderSectionContent = (section: MainSection) => {
+    if (section === 'resumen') {
+      return (
+        <OverviewDashboard
+          state={activeState}
+          summary={summary}
+          periodPreset={periodPreset}
+          customStart={customStart}
+          customEnd={customEnd}
+          supuestos={store.supuestos}
+          activeSupuesto={activeSupuesto}
+          nextSupuestoNumber={store.nextSupuestoNumber}
+          pendingGmailInvoicesCount={detectedEmailInvoices.length}
+          onOpenWizard={() => setWizardOpen(true)}
+          onSelectSupuesto={(id) =>
+            setStore((prev) => ({ ...prev, activeSupuestoId: id }))
+          }
+          onSaveSupuestoAs={handleSaveSupuestoAs}
+          onCreateNewSupuesto={handleCreateNewSupuesto}
+          onDeleteSupuesto={handleDeleteSupuesto}
+          onChangePeriod={setPeriodPreset}
+          onChangeCustomRange={(start, end) => {
+            setCustomStart(start);
+            setCustomEnd(end);
+          }}
+          onToggleProrratearGastos={() =>
+            updateActiveState((prev) => ({
+              ...prev,
+              prorratearGastos: !prev.prorratearGastos,
+            }))
+          }
+          onQuickAddMovement={handleAddMovement}
+          onConfirmMovement={handleConfirmMovement}
+          onNavigate={navigateToSection}
+          onOpenGeminiAssistant={(mode) => {
+            setGeminiInitialMode(mode);
+            setGeminiModalOpen(true);
+          }}
+          onOpenGmailScanner={() => setGmailPanelOpen(true)}
+          onOpenTestFamilyModal={() => setTestAccessModalOpen(true)}
+        />
+      );
+    }
+
+    if (section === 'movimientos') {
+      return (
+        <MovementsLedger
+          state={activeState}
+          summary={summary}
+          periodPreset={periodPreset}
+          pendingGmailCount={detectedEmailInvoices.length}
+          onChangePeriod={setPeriodPreset}
+          onToggleProrratearGastos={() =>
+            updateActiveState((prev) => ({
+              ...prev,
+              prorratearGastos: !prev.prorratearGastos,
+            }))
+          }
+          onAddMovement={handleAddMovement}
+          onUpdateMovement={handleUpdateMovement}
+          onDeleteMovement={handleDeleteMovement}
+          onConfirmMovement={handleConfirmMovement}
+          onOpenGeminiAssistant={(mode) => {
+            setGeminiInitialMode(mode);
+            setGeminiModalOpen(true);
+          }}
+          onOpenGmailScanner={() => setGmailPanelOpen(true)}
+        />
+      );
+    }
+
+    if (section === 'cuentas') {
+      return (
+        <AccountsAndFunds
+          state={activeState}
+          summary={summary}
+          onUpdateAccounts={(accounts) =>
+            updateActiveState((prev) => {
+              const nextState = { ...prev, accounts };
+              if (accounts.length > prev.accounts.length) {
+                return processDueCardAutoRecharges(nextState).nextState;
+              }
+              return nextState;
+            })
+          }
+          onUpdateGoals={(savingsGoals) =>
+            updateActiveState((prev) => ({ ...prev, savingsGoals }))
+          }
+          onUpdateCategories={(categories) =>
+            updateActiveState((prev) => ({ ...prev, categories }))
+          }
+          onUpdateMembers={(members) =>
+            updateActiveState((prev) => ({ ...prev, members }))
+          }
+          onAddMovement={handleAddMovement}
+          onTriggerCardRecharge={(accountId) =>
+            updateActiveState(
+              (prev) => processDueCardAutoRecharges(prev, undefined, accountId).nextState
+            )
+          }
+        />
+      );
+    }
+
+    if (section === 'comparador') {
+      return (
+        <ScenarioComparator
+          activeSupuesto={activeSupuesto}
+          effectiveMortgageInput={effectiveMortgageInput}
+          supuestos={store.supuestos}
+          nextSupuestoNumber={store.nextSupuestoNumber}
+          onSaveWhatIfAsSupuesto={handleSaveWhatIfAsSupuesto}
+          onSelectSupuesto={(id) =>
+            setStore((prev) => ({ ...prev, activeSupuestoId: id }))
+          }
+        />
+      );
+    }
+
+    if (section === 'hipoteca') {
+      return (
+        <MortgageTreasurySimulator
+          input={effectiveMortgageInput}
+          budgetFreeCashflowPreMortgage={summary.capacidadAhorroPreHipotecaMensual}
+          onUpdateInput={(mortgageInput) =>
+            updateActiveState((prev) => ({ ...prev, mortgageInput }))
+          }
+          onOpenPosterMode={() => {
+            navigateToSection('poster');
+            setPosterFullscreen(true);
+          }}
+        />
+      );
+    }
+
+    if (section === 'irpf') {
+      return (
+        <IrpfSimulator
+          profile={adaptedProfileForIrpf}
+          irpfInput={activeState.irpfInput}
+          onUpdateIrpf={(irpfInput) =>
+            updateActiveState((prev) => ({ ...prev, irpfInput }))
+          }
+          onSyncFromBudgetAndMortgage={handleSyncIrpfFromEconomy}
+        />
+      );
+    }
+
+    return (
+      <PosterLandscapeView
+        title={`${activeSupuesto.nombre} · ${TEMPLATE_METADATA[activeTemplateId].nombre}`}
+        irpfHabilitado={irpfHabilitado}
+        state={activeState}
+        summary={summary}
+        effectiveMortgageInput={effectiveMortgageInput}
+        isFullscreen={posterFullscreen}
+        onToggleFullscreen={() => setPosterFullscreen((prev) => !prev)}
+        onExportReport={handleExportReport}
+      />
+    );
+  };
+
+  if (showLanding) {
+    return (
+      <>
+        <GestarianLandingView
+          user={user}
+          authLoading={authLoading}
+          onGoogleSignIn={async () => {
+            const ok = await handleGoogleSignIn(false);
+            if (ok) {
+              setShowLanding(false);
+              navigateToSection('resumen');
+            }
+          }}
+          onEmailSignIn={async (email, password) => {
+            try {
+              await emailSignIn(email, password);
+            } catch (err) {
+              throw new Error(formatEmailAuthError(err));
+            }
+          }}
+          onEmailRegister={async (email, password) => {
+            try {
+              await emailRegister(email, password);
+            } catch (err) {
+              throw new Error(formatEmailAuthError(err));
+            }
+          }}
+          onSignOut={handleGoogleSignOut}
+          onEnterWorkspace={(section) => {
+            const target = section ?? 'resumen';
+            if (target === 'asesor') {
+              setAdvisorChatOpen(true);
+              return;
+            }
+            setShowLanding(false);
+            setActiveSection(target);
+            setPosterFullscreen(false);
+          }}
+          onOpenWizardAssistant={() => {
+            setShowLanding(false);
+            setActiveSection('resumen');
+            setWizardOpen(true);
+          }}
+          onOpenChat={() => {
+            setAdvisorChatOpen(true);
+          }}
+        />
+        {wizardOpen && (
+          <SetupWizardModal
+            initialState={activeState}
+            initialSupuestoName={activeSupuesto.nombre}
+            onClose={() => setWizardOpen(false)}
+            onApply={handleApplyWizard}
+          />
+        )}
+        <FinancialAdvisorPanel
+          isOpen={advisorChatOpen}
+          state={activeState}
+          summary={summary}
+          effectiveMortgageInput={effectiveMortgageInput}
+          irpfHabilitado={irpfHabilitado}
+          onClose={() => setAdvisorChatOpen(false)}
+        />
+      </>
+    );
+  }
+
   return (
     <div className="min-h-screen bg-slate-50 text-slate-900 dark:bg-slate-950 dark:text-slate-100">
       {/* Top Bar Contract: estrictamente 3 zonas con gap-8 */}
@@ -759,25 +1139,19 @@ export default function App() {
           {/* Zona 1: Brand wordmark en una línea */}
           <button
             type="button"
-            onClick={() => {
-              setActiveSection('resumen');
-              setPosterFullscreen(false);
-            }}
+            onClick={() => navigateToSection('resumen')}
             className="font-display text-lg font-extrabold tracking-tight text-slate-900 whitespace-nowrap shrink-0 dark:text-white"
           >
             Patrimonio &amp; IRPF España
           </button>
 
           {/* Zona 2: enlaces de navegación en una línea */}
-          <nav className="hidden items-center gap-6 md:flex" aria-label="Navegación principal">
+          <nav className="hidden items-center gap-6 lg:flex" aria-label="Navegación principal">
             {navItems.map((item) => (
               <button
                 key={item.id}
                 type="button"
-                onClick={() => {
-                  setActiveSection(item.id);
-                  setPosterFullscreen(false);
-                }}
+                onClick={() => navigateToSection(item.id)}
                 className={`border-b-2 py-1 text-sm font-semibold transition-colors whitespace-nowrap shrink-0 ${
                   activeSection === item.id
                     ? 'border-blue-700 text-blue-700 dark:border-blue-400 dark:text-blue-400'
@@ -788,48 +1162,53 @@ export default function App() {
               </button>
             ))}
           </nav>
-
-          {/* Zona 3: 1 acción principal */}
-          <div className="shrink-0">
-            <button
-              type="button"
-              onClick={() => setActiveSection('poster')}
-              className={`rounded-lg px-4 py-2 text-sm font-semibold transition-colors whitespace-nowrap shrink-0 ${
-                activeSection === 'poster'
-                  ? 'bg-slate-900 text-white dark:bg-white dark:text-slate-900'
-                  : 'bg-blue-700 text-white hover:bg-blue-800'
-              }`}
-            >
-              Póster Landscape
-            </button>
-          </div>
         </div>
       </header>
 
-      {/* Navegación móvil compacta */}
-      <div className="no-print flex overflow-x-auto border-b border-slate-200 bg-white px-4 py-2 md:hidden dark:border-slate-800 dark:bg-slate-900">
-        <div className="flex gap-2">
-          {navItems.map((item) => (
+      {/* Navegación móvil y tablet portrait con scroll lateral sincronizado */}
+      <div
+        className={`no-print border-b border-slate-200 bg-white px-4 py-2 dark:border-slate-800 dark:bg-slate-900 ${
+          isPortraitScrollViewport ? 'block' : 'flex lg:hidden'
+        }`}
+      >
+        <div className="flex items-center gap-2 overflow-x-auto no-scrollbar">
+          {SECTION_ORDER.map((sec) => (
             <button
-              key={item.id}
+              key={sec}
+              ref={(el) => {
+                mobileNavTabRefs.current[sec] = el;
+              }}
               type="button"
-              onClick={() => setActiveSection(item.id)}
-              className={`rounded-lg px-3 py-1.5 text-sm font-semibold whitespace-nowrap shrink-0 ${
-                activeSection === item.id
+              onClick={() => navigateToSection(sec)}
+              className={`min-h-[40px] rounded-lg px-3.5 py-1.5 text-sm font-semibold whitespace-nowrap shrink-0 transition-colors ${
+                activeSection === sec
                   ? 'bg-blue-700 text-white'
-                  : 'text-slate-600 dark:text-slate-300'
+                  : 'text-slate-600 hover:bg-slate-100 dark:text-slate-300 dark:hover:bg-slate-800'
               }`}
             >
-              {item.label}
+              {SECTION_LABELS[sec]}
             </button>
           ))}
         </div>
+        {isPortraitScrollViewport && (
+          <p className="mt-1 text-[11px] font-medium text-slate-400 dark:text-slate-500">
+            Desliza lateralmente para cambiar de sección
+          </p>
+        )}
       </div>
 
       {/* Barra del Espacio de Trabajo: Modalidad, Alcance, Nube Google, PWA y Tema */}
       <section className="no-print border-b border-slate-200 bg-white/80 dark:border-slate-800 dark:bg-slate-900/60">
         <div className="mx-auto flex max-w-[1440px] flex-wrap items-center justify-between gap-4 px-6 py-3.5">
           <div className="flex flex-wrap items-center gap-2">
+            <button
+              type="button"
+              onClick={() => setShowLanding(true)}
+              className="rounded-lg bg-black px-3 py-1.5 text-xs font-extrabold tracking-[0.14em] text-white transition-opacity hover:opacity-85 whitespace-nowrap shrink-0 dark:border dark:border-white/25"
+              title="Volver a la portada GESTARIAN"
+            >
+              GESTARIAN
+            </button>
             {(
               ['unidad_familiar', 'adulto_individual', 'adolescente'] as TemplateId[]
             ).map((tpl) => (
@@ -910,19 +1289,12 @@ export default function App() {
 
             <button
               type="button"
-              onClick={() => {
-                setActiveSection('asesor');
-                setPosterFullscreen(false);
-              }}
-              className={`inline-flex items-center gap-1.5 rounded-lg border px-3 py-1.5 text-sm font-semibold transition-colors whitespace-nowrap shrink-0 ${
-                activeSection === 'asesor'
-                  ? 'border-emerald-700 bg-emerald-700 text-white'
-                  : 'border-emerald-200 bg-emerald-50 text-emerald-800 hover:bg-emerald-100 dark:border-emerald-800 dark:bg-emerald-950/40 dark:text-emerald-300'
-              }`}
-              title="Consultar al Asesor Fiscal y Económico (Chat, Búsqueda Google, Transcripción y Voz en Directo)"
+              onClick={() => setAdvisorChatOpen(true)}
+              className="inline-flex items-center gap-1.5 rounded-lg border border-slate-900 bg-slate-900 px-3 py-1.5 text-sm font-semibold text-white transition-colors hover:bg-slate-800 whitespace-nowrap shrink-0 dark:border-white dark:bg-white dark:text-black dark:hover:bg-white/90"
+              title="Abrir chat de Asesor IA a pantalla completa"
             >
-              <Scale className="h-4 w-4" />
-              Asesor Fiscal IA
+              <MessageCircle className="h-4 w-4" />
+              Asesor IA
             </button>
 
             <button
@@ -976,146 +1348,42 @@ export default function App() {
         </div>
       )}
 
-      {/* Contenido Principal */}
-      <main className="mx-auto max-w-[1440px] px-6 py-7">
-        {activeSection === 'resumen' && (
-          <OverviewDashboard
-            state={activeState}
-            summary={summary}
-            periodPreset={periodPreset}
-            customStart={customStart}
-            customEnd={customEnd}
-            supuestos={store.supuestos}
-            activeSupuesto={activeSupuesto}
-            nextSupuestoNumber={store.nextSupuestoNumber}
-            pendingGmailInvoicesCount={detectedEmailInvoices.length}
-            onOpenWizard={() => setWizardOpen(true)}
-            onSelectSupuesto={(id) =>
-              setStore((prev) => ({ ...prev, activeSupuestoId: id }))
-            }
-            onSaveSupuestoAs={handleSaveSupuestoAs}
-            onCreateNewSupuesto={handleCreateNewSupuesto}
-            onDeleteSupuesto={handleDeleteSupuesto}
-            onChangePeriod={setPeriodPreset}
-            onChangeCustomRange={(start, end) => {
-              setCustomStart(start);
-              setCustomEnd(end);
-            }}
-            onQuickAddMovement={handleAddMovement}
-            onConfirmMovement={handleConfirmMovement}
-            onNavigate={(sec) => setActiveSection(sec)}
-            onOpenGeminiAssistant={(mode) => {
-              setGeminiInitialMode(mode);
-              setGeminiModalOpen(true);
-            }}
-            onOpenGmailScanner={() => setGmailPanelOpen(true)}
-            onOpenTestFamilyModal={() => setTestAccessModalOpen(true)}
-          />
-        )}
+      {/* Contenido Principal: Scroll lateral en móvil y tablet portrait, vista directa en escritorio */}
+      {isPortraitScrollViewport && !posterFullscreen ? (
+        <main className="w-full overflow-hidden">
+          <div
+            ref={horizontalTrackRef}
+            onScroll={handleHorizontalTrackScroll}
+            className="flex w-full snap-x snap-mandatory overflow-x-auto scroll-smooth no-scrollbar"
+            style={{ WebkitOverflowScrolling: 'touch' }}
+          >
+            {SECTION_ORDER.map((sec) => (
+              <section
+                key={sec}
+                data-section={sec}
+                aria-label={SECTION_LABELS[sec]}
+                className="w-full shrink-0 snap-start snap-always overflow-x-hidden px-4 py-5 sm:px-6"
+              >
+                {renderSectionContent(sec)}
+              </section>
+            ))}
+          </div>
+        </main>
+      ) : (
+        <main className="mx-auto max-w-[1440px] px-6 py-7">
+          {renderSectionContent(activeSection)}
+        </main>
+      )}
 
-        {activeSection === 'movimientos' && (
-          <MovementsLedger
-            state={activeState}
-            summary={summary}
-            periodPreset={periodPreset}
-            pendingGmailCount={detectedEmailInvoices.length}
-            onChangePeriod={setPeriodPreset}
-            onAddMovement={handleAddMovement}
-            onUpdateMovement={handleUpdateMovement}
-            onDeleteMovement={handleDeleteMovement}
-            onConfirmMovement={handleConfirmMovement}
-            onOpenGeminiAssistant={(mode) => {
-              setGeminiInitialMode(mode);
-              setGeminiModalOpen(true);
-            }}
-            onOpenGmailScanner={() => setGmailPanelOpen(true)}
-          />
-        )}
-
-        {activeSection === 'cuentas' && (
-          <AccountsAndFunds
-            state={activeState}
-            summary={summary}
-            onUpdateAccounts={(accounts) =>
-              updateActiveState((prev) => ({ ...prev, accounts }))
-            }
-            onUpdateGoals={(savingsGoals) =>
-              updateActiveState((prev) => ({ ...prev, savingsGoals }))
-            }
-            onUpdateCategories={(categories) =>
-              updateActiveState((prev) => ({ ...prev, categories }))
-            }
-            onUpdateMembers={(members) =>
-              updateActiveState((prev) => ({ ...prev, members }))
-            }
-            onAddMovement={handleAddMovement}
-          />
-        )}
-
-        {activeSection === 'comparador' && (
-          <ScenarioComparator
-            activeSupuesto={activeSupuesto}
-            effectiveMortgageInput={effectiveMortgageInput}
-            supuestos={store.supuestos}
-            nextSupuestoNumber={store.nextSupuestoNumber}
-            onSaveWhatIfAsSupuesto={handleSaveWhatIfAsSupuesto}
-            onSelectSupuesto={(id) =>
-              setStore((prev) => ({ ...prev, activeSupuestoId: id }))
-            }
-          />
-        )}
-
-        {activeSection === 'hipoteca' && (
-          <MortgageTreasurySimulator
-            input={effectiveMortgageInput}
-            budgetFreeCashflowPreMortgage={summary.capacidadAhorroPreHipotecaMensual}
-            onUpdateInput={(mortgageInput) =>
-              updateActiveState((prev) => ({ ...prev, mortgageInput }))
-            }
-            onOpenPosterMode={() => {
-              setActiveSection('poster');
-              setPosterFullscreen(true);
-            }}
-          />
-        )}
-
-        {activeSection === 'irpf' && (
-          <IrpfSimulator
-            profile={adaptedProfileForIrpf}
-            irpfInput={activeState.irpfInput}
-            onUpdateIrpf={(irpfInput) =>
-              updateActiveState((prev) => ({ ...prev, irpfInput }))
-            }
-            onSyncFromBudgetAndMortgage={handleSyncIrpfFromEconomy}
-          />
-        )}
-
-        {activeSection === 'asesor' && (
-          <FinancialAdvisorPanel
-            state={activeState}
-            summary={summary}
-            effectiveMortgageInput={effectiveMortgageInput}
-            irpfHabilitado={irpfHabilitado}
-            onNavigate={(sec) => {
-              setActiveSection(sec);
-              setPosterFullscreen(false);
-            }}
-          />
-        )}
-
-        {activeSection === 'poster' && (
-          <PosterLandscapeView
-            title={`${activeSupuesto.nombre} · ${TEMPLATE_METADATA[activeTemplateId].nombre}`}
-            irpfHabilitado={irpfHabilitado}
-            state={activeState}
-            summary={summary}
-            effectiveMortgageInput={effectiveMortgageInput}
-            isFullscreen={posterFullscreen}
-            onToggleFullscreen={() => setPosterFullscreen((prev) => !prev)}
-            onExportReport={handleExportReport}
-          />
-        )}
-      </main>
+      {/* Chat limpio a toda pantalla del Asesor IA */}
+      <FinancialAdvisorPanel
+        isOpen={advisorChatOpen}
+        state={activeState}
+        summary={summary}
+        effectiveMortgageInput={effectiveMortgageInput}
+        irpfHabilitado={irpfHabilitado}
+        onClose={() => setAdvisorChatOpen(false)}
+      />
 
       {/* Asistente Guiado paso a paso lanzado desde el botón "Iniciar" del Dashboard */}
       {wizardOpen && (

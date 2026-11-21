@@ -43,6 +43,87 @@
   background: rgba(100, 116, 139, 0.45);
 }
 
+@keyframes gestarianReveal {
+  0% {
+    opacity: 0;
+    transform: scale(0.3);
+  }
+  100% {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+@keyframes gestarianControlsReveal {
+  0% {
+    opacity: 0;
+    transform: translateY(10px);
+  }
+  100% {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes gestarianFloatButtons {
+  0% {
+    opacity: 0;
+    transform: translateY(14px);
+  }
+  100% {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.animate-gestarian-reveal {
+  animation: gestarianReveal 2s cubic-bezier(0.16, 1, 0.3, 1) both;
+  will-change: transform, opacity;
+}
+
+.animate-gestarian-controls {
+  animation: gestarianControlsReveal 0.55s cubic-bezier(0.16, 1, 0.3, 1) 2s both;
+  will-change: transform, opacity;
+}
+
+.animate-gestarian-float {
+  animation: gestarianFloatButtons 0.2s cubic-bezier(0.16, 1, 0.3, 1) both;
+  will-change: transform, opacity;
+}
+
+.gestarian-floating-grid {
+  display: grid;
+  width: 100%;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 0.75rem;
+}
+
+@media (max-width: 767px), ((max-width: 1024px) and (orientation: portrait)) {
+  .gestarian-floating-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 0.625rem;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .animate-gestarian-reveal,
+  .animate-gestarian-controls,
+  .animate-gestarian-float {
+    animation: none !important;
+    opacity: 1 !important;
+    transform: none !important;
+  }
+}
+
+.no-scrollbar {
+  -ms-overflow-style: none;
+  scrollbar-width: none;
+}
+
+.no-scrollbar::-webkit-scrollbar {
+  display: none;
+}
+
 @media print {
   @page {
     size: landscape;

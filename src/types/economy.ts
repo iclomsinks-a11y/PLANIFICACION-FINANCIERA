@@ -18,6 +18,17 @@ export type AccountType =
   | 'tarjeta'
   | 'personalizada';
 
+export type CardSubtype = 'credito' | 'debito' | 'monedero' | 'virtual' | 'otras';
+
+export interface CardAccountConfig {
+  tipoTarjeta: CardSubtype;
+  limiteDisponible: number;
+  recargaMensualImporte: number;
+  fechaPeriodicaRecarga: string; // YYYY-MM-DD (fecha de inicio y día periódico mensual)
+  cuentaOrigenRecargaId?: string;
+  ultimaRecargaYYYYMM?: string;
+}
+
 export type MovementType = 'ingreso' | 'gasto' | 'transferencia' | 'devolucion';
 
 export type MovementRecurrence = 'puntual' | 'mensual' | 'trimestral' | 'anual';
@@ -81,6 +92,7 @@ export interface FinancialAccount {
   saldoInicial: number;
   taePct: number;
   activa: boolean;
+  tarjetaConfig?: CardAccountConfig;
 }
 
 export interface SavingsGoal {
@@ -147,6 +159,7 @@ export interface EconomyWorkspaceState {
   mode: EconomyMode;
   activeMemberScope: 'todos' | string; // 'todos' o member.id
   actingMemberId: string; // Usuario actual operando (control parental y permisos)
+  prorratearGastos?: boolean; // Divide gastos trimestrales entre 3 y anuales entre 12
   members: HouseholdMember[];
   accounts: FinancialAccount[];
   savingsGoals: SavingsGoal[];
